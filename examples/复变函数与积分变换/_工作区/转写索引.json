@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "sources": [
+    {
+      "source_id": "SRC-001",
+      "source_hash": "5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b",
+      "path": "资料转写/SRC-001-SRC-001-《复变函数与积分变换 第4版》李红 高等教育出版社 2013 I-5e6f0aef671e-agent-v1.md",
+      "engine": "host-subagent"
+    }
+  ]
+}

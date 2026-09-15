@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "chapters": [
+    {
+      "id": "KC-001",
+      "title": "第一章　复数与复变函数",
+      "order": 1,
+      "path": "_工作区/章节知识/KC-001.md",
+      "status": "complete",
+      "source_ranges": [
+        {"source_id": "SRC-001", "from_unit": "U00002", "to_unit": "U00005"}
+      ]
+    },
+    {
+      "id": "KC-002",
+      "title": "第二章　解析函数（截至 §2.3.3 幂函数开头，样本截断）",
+      "order": 2,
+      "path": "_工作区/章节知识/KC-002.md",
+      "status": "complete",
+      "source_ranges": [
+        {"source_id": "SRC-001", "from_unit": "U00005", "to_unit": "U00008"}
+      ]
+    }
+  ],
+  "lessons": [
+    {
+      "id": "LC-001",
+      "title": "第 1 讲　复数与复变函数",
+      "order": 1,
+      "path": "学习文档/01-复数与复变函数.md",
+      "status": "complete"
+    },
+    {
+      "id": "LC-002",
+      "title": "第 2 讲　解析函数（前两讲范围内的完整内容）",
+      "order": 2,
+      "path": "学习文档/02-解析函数.md",
+      "status": "complete"
+    }
+  ]
+}

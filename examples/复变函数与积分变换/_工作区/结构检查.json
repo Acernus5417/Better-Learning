@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "passed": true,
+  "counts": {
+    "sources": 1,
+    "units": 8,
+    "knowledge": 35,
+    "lessons": 2,
+    "cards": 14,
+    "coverage": {"non_teaching": 1, "covered": 7}
+  },
+  "errors": [],
+  "warnings": [
+    "结构检查不证明教学正确性、公式渲染或实际学习效果；须完成内容复核。"
+  ],
+  "checked_at_stage": "before_package",
+  "note": "本结果为 package 前一次 validate_package.py 的原始输出（passed=true）。package 已按设计删除 _工作区/提取内容 与 资料转写/_分片 等中间产物，因此该检查无法在打包后重复运行；打包后另做了链接与锚点的人工式复核，见 课程文档/质量报告.md 第六、七节。"
+}

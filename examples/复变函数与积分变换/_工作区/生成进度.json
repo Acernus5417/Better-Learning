@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "confirmations": {"goal": true, "materials": true, "baseline": true},
+  "stage": "ready",
+  "completed_chapters": ["KC-001", "KC-002"],
+  "completed_lessons": ["LC-001", "LC-002"],
+  "blockers": [],
+  "next_action": "受限学习包（仅覆盖 SRC-001 样本范围）已生成；补齐第三章及以后资料后走 inventory → prepare 扩展；用户按学习反馈.md 提交作答后增量修订",
+  "confirmation_note": "materials 依据用户原话“仅根据这个文件生成学习档案”确认；goal 与 baseline 在需求确认中用户未显式作答，按默认（工科期末应试）与保守路线（关键前置全部在包内讲清 + 诊断题）处理，处理方式记录在学习需求.md 第一、四节，可随时修订。"
+}

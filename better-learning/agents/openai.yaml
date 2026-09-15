@@ -1,0 +1,4 @@
+interface:
+  display_name: "Better Learning"
+  short_description: "把教材、扫描件、课件和题库整理成可独立自学的完整课程与复习卡片"
+  default_prompt: "使用 $better-learning，先确认我的学习目标、资料是否齐全及已有基础，再生成完整的自学文件包。"

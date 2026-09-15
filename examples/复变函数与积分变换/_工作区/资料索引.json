@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "next_id": 2,
+  "sources": [
+    {
+      "id": "SRC-001",
+      "path": "C:\\Users\\win11\\Desktop\\新建文件夹\\SRC-001-《复变函数与积分变换 第4版》李红 高等教育出版社 2013 ISBN：9787-fd2956ccddad-agent-v1.md",
+      "name": "SRC-001-《复变函数与积分变换 第4版》李红 高等教育出版社 2013 ISBN：9787-fd2956ccddad-agent-v1.md",
+      "sha256": "5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b",
+      "size": 116971,
+      "format": "md"
+    }
+  ]
+}

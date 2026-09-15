@@ -1,0 +1,239 @@
+{
+  "schema_version": 1,
+  "engine": "host-subagent",
+  "generated_at": "2026-09-15T07:28:41.123186+00:00",
+  "batch_size": 8,
+  "max_concurrent": 2,
+  "sources": [
+    {
+      "id": "SRC-001",
+      "path": "C:\\Users\\win11\\Desktop\\新建文件夹\\SRC-001-《复变函数与积分变换 第4版》李红 高等教育出版社 2013 ISBN：9787-fd2956ccddad-agent-v1.md",
+      "name": "SRC-001-《复变函数与积分变换 第4版》李红 高等教育出版社 2013 ISBN：9787-fd2956ccddad-agent-v1.md",
+      "sha256": "5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b",
+      "size": 116971,
+      "format": "md",
+      "units": [
+        {
+          "id": "U00001",
+          "kind": "text",
+          "locator": "text block 1; character offset 0",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00001/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00001/text-001.md": "c3287d3113b30a54b17310be6cc66b1e2fc2141f84229ec43783230281305bd9"
+          },
+          "batch": "B01",
+          "member": "vis-src001-b01-r1",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00001/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00001/meta.json",
+          "chars": 7477,
+          "unresolved": false,
+          "before_hash": "d7ef52d0a43a5f4e51398defe6b195d717963225dc182e35d5ad3fa5783b60f2",
+          "output_hash": "a31a56cee0ad2653d7e49529c7cedee1791311415a65e45d41efa4017c2de8cd"
+        },
+        {
+          "id": "U00002",
+          "kind": "text",
+          "locator": "text block 2; character offset 10000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00002/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00002/text-001.md": "39e6ede6d1cf61ca2aa10e615a2fd5bd7fb6bf616736958e177a6cdd9e8f054d"
+          },
+          "batch": "B01",
+          "member": "vis-src001-b01-r1",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00002/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00002/meta.json",
+          "chars": 8592,
+          "unresolved": false,
+          "before_hash": "bf87e183b7990c108e1ed58dd900f87634cb8f7ba53315e22ede8630b6e79f35",
+          "output_hash": "297c7e45520b3f15b22373639207b764571f423b1a967fe668a084bc9455eda8"
+        },
+        {
+          "id": "U00003",
+          "kind": "text",
+          "locator": "text block 3; character offset 20000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00003/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00003/text-001.md": "49e86cfb2789df42741e239cea9ad959668d31523e6c0d1eb88b949a4ce1b61d"
+          },
+          "batch": "B01",
+          "member": "vis-src001-b01-r1",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00003/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00003/meta.json",
+          "chars": 8962,
+          "unresolved": false,
+          "before_hash": "d0b8fa2e79252c458e3c50ebd8dfd2873c2063a970ab14e28f49859581764925",
+          "output_hash": "eb1e5b5ed9d2ccd8554d232ecaf45b9cc9938c56625c1a7526c8a392cfe217b3"
+        },
+        {
+          "id": "U00004",
+          "kind": "text",
+          "locator": "text block 4; character offset 30000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00004/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00004/text-001.md": "58266904eb58a85b5dd3e5803c9f816cd3e9d2eae567008fa2ed1afa71607800"
+          },
+          "batch": "B02",
+          "member": "vis-src001-b02-r1",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00004/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00004/meta.json",
+          "chars": 8594,
+          "unresolved": false,
+          "before_hash": "10c56f2b5301d506efbf36c8f5c819bfaae0d2f643cb17785853fe803c0c0280",
+          "output_hash": "813bff70da593e798fdfa72a4e466e48652edb62e2443f8333fd4905696d3448"
+        },
+        {
+          "id": "U00005",
+          "kind": "text",
+          "locator": "text block 5; character offset 40000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00005/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00005/text-001.md": "802ce0b8986ea2393fa8facefdd45129622f157c0a95e73d86d5989f599ad509"
+          },
+          "batch": "B02",
+          "member": "vis-src001-b02-r1",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00005/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00005/meta.json",
+          "chars": 8633,
+          "unresolved": false,
+          "before_hash": "06e95ac1d7424468846287bd2afca5f5294eba2d3d9a5d67b6c19daf24b5af6d",
+          "output_hash": "ee9d249c3a79e0a098eda898355d1037f4cf595ec0c37bb4523eeab9388a1c48"
+        },
+        {
+          "id": "U00006",
+          "kind": "text",
+          "locator": "text block 6; character offset 50000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00006/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00006/text-001.md": "40c40405255e826e9d79ea05e0b23c6d40faeeea933c8d6e968a8e7899e2740e"
+          },
+          "batch": "B02",
+          "member": "vis-src001-b02-r1",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00006/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00006/meta.json",
+          "chars": 8812,
+          "unresolved": false,
+          "before_hash": "78f99f29a561564e8b6a7c33389c7cedcbb421b399ad8eac448415b9cd71225b",
+          "output_hash": "d6340c227b4d515076eab621534a2c01b813f1f15089e1e8ff9557bbf38dcdf0"
+        },
+        {
+          "id": "U00007",
+          "kind": "text",
+          "locator": "text block 7; character offset 60000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00007/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00007/text-001.md": "07aeb81d4b4e0e18272addaa4d354473cda611837fd4890efd8cf2c44ee09f56"
+          },
+          "batch": "B03",
+          "member": "vis-src001-b03",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00007/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00007/meta.json",
+          "chars": 8611,
+          "unresolved": false,
+          "before_hash": null,
+          "output_hash": "77f4a3f3a13127e577538a4badc27b076c7f7350c66552fdc7add3efaeeb1f14"
+        },
+        {
+          "id": "U00008",
+          "kind": "text",
+          "locator": "text block 8; character offset 70000",
+          "assets": [
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00008/text-001.md"
+          ],
+          "asset_hashes": {
+            "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00008/text-001.md": "e3a9e4013225e9373a2889f82eacbccd1d393560177b2a8ba2f9488601ed52a8"
+          },
+          "batch": "B03",
+          "member": "vis-src001-b03",
+          "status": "done",
+          "output": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00008/transcript-agent.md",
+          "meta": "_工作区/提取内容/SRC-001/5e6f0aef671eb6cf4b090b2092b983a0f1e35aa627e08dbc6c6b5cb817f4870b/U00008/meta.json",
+          "chars": 2083,
+          "unresolved": false,
+          "before_hash": null,
+          "output_hash": "514a324d27228642e1567292e8bd20619d2fbcf45567dd82295dea776ced106b"
+        }
+      ],
+      "batches": [
+        {
+          "id": "B01",
+          "member": "vis-src001-b01",
+          "status": "done",
+          "units": [
+            "U00001",
+            "U00002",
+            "U00003"
+          ],
+          "attempts": 2,
+          "fragment": "资料转写/_分片/SRC-001-5e6f0aef671e-B01.md",
+          "active_member": null,
+          "assigned": [],
+          "prompt": "_工作区/派发提示/vis-src001-b01-r1.md",
+          "host": "codebuddy"
+        },
+        {
+          "id": "B02",
+          "member": "vis-src001-b02",
+          "status": "done",
+          "units": [
+            "U00004",
+            "U00005",
+            "U00006"
+          ],
+          "attempts": 2,
+          "fragment": "资料转写/_分片/SRC-001-5e6f0aef671e-B02.md",
+          "active_member": null,
+          "assigned": [],
+          "prompt": "_工作区/派发提示/vis-src001-b02-r1.md",
+          "host": "codebuddy"
+        },
+        {
+          "id": "B03",
+          "member": "vis-src001-b03",
+          "status": "done",
+          "units": [
+            "U00007",
+            "U00008"
+          ],
+          "attempts": 1,
+          "fragment": "资料转写/_分片/SRC-001-5e6f0aef671e-B03.md",
+          "active_member": null,
+          "assigned": [],
+          "prompt": "_工作区/派发提示/vis-src001-b03.md",
+          "host": "codebuddy"
+        }
+      ],
+      "transcript": "资料转写/SRC-001-SRC-001-《复变函数与积分变换 第4版》李红 高等教育出版社 2013 I-5e6f0aef671e-agent-v1.md",
+      "scanned": false,
+      "transcript_hash": "10591e1884b68c875452bba5ec1142053bbf4f9ab55ebe6e18e1ee97408ce062"
+    }
+  ],
+  "probe": {
+    "passed": true,
+    "member": "probe1",
+    "at": "2026-09-15T07:30:00.649778+00:00",
+    "content_hash": "2689367b205c16ce32ed4200942b8b8b1e262dfc70d9bc9fbc77c49699a4f1df"
+  },
+  "updated_at": "2026-09-15T08:01:25.393433+00:00",
+  "packaged": "2026-09-15T08:01:25.393402+00:00"
+}

@@ -1,0 +1,4 @@
+.validation-deps/
+**/__pycache__/
+.runtime/
+验证样本/
