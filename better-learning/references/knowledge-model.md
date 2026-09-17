@@ -1,6 +1,8 @@
 # 数据约定与断点恢复
 
-所有 JSON/JSONL 使用 UTF-8，`schema_version` 为 1。结构路径相对课程根目录并使用 `/`，禁止 `..` 逃出目录。材料原路径可为绝对路径。所有 ID 分配后保持稳定，显示顺序单独记录。
+所有 JSON/JSONL 使用 UTF-8，`schema_version` 除转写台账为 3 外均沿用 1。结构路径相对课程根目录并使用 `/`，禁止 `..` 逃出目录。材料原路径可为绝对路径。所有 ID 分配后保持稳定，显示顺序单独记录。
+
+v2 课程的 `_工作区/课程配置.json` 至少含：`link_mode: obsidian`、`link_schema_version: 2`、`graph_policy_version: bl-typed-links-v2`、`course_vault_prefix`、`layout: working|packaged`。缺 `link_schema_version` 的旧包按 v1 验收，不静默升级。
 
 ## 提取层（脚本维护）
 
@@ -16,17 +18,19 @@
 
 `_工作区/转写任务.json` 是转写状态的唯一来源；`转写拆分计划.md` 是可重建投影，包含来源清单、单元清单、批次分配、划分规则、状态图例、更新规则六节。不手工同时维护两个状态表。
 
-台账记录 batch_size、max_concurrent、来源 ID/路径/完整哈希/格式、单元 id/kind/locator/assets/batch/member/output/status 及字符数和哈希。单元通过 source_id + unit_id 唯一定位，各来源可从 U00001 开始。每批同来源、连续编号，默认 8 个，最多 2 个并发；章界已知时不跨章。
+台账 schema 3 记录 policy、max_attempts、max_concurrent、sources、attempts 和 probe_ref。单元通过 source_id + unit_id 唯一定位，包含 processing_route、assets、asset_hashes、output、meta、status、current_attempt、attempt_count。普通页默认 bounded 最多 5 页；异常页按单元升级 strict 并生成 overview/tiles。默认并发 4，可配 1..8，按宿主容量下调。unit 保存 next_profile、strict_reasons、complexity_flags、last_attempt_id、last_result；attempt 保存 profile、parent_attempt_id、result_contract。
 
-单元输出为版本提取目录中的 `U00001/transcript-agent.md`。成员只写分配的正文，collect 维护 `meta.json`、资源与结果哈希、负责人和台账。pending 未开始，dispatched 有活动租约，done 已机械校验，failed 失败，unresolved 含待核实内容。non_teaching/duplicate 只能经 resolve 记录理由与课程内证据，duplicate 还必须有实际去向。
+正式输出仍是提取目录的 `U00001/transcript-agent.md`，但只能由脚本提交。成员只写 `_工作区/转写尝试/<attempt_id>/<source_id>/<unit_id>.md`。attempt 保存 source_id、batch_id、unit_ids、logical_member、host_agent_id、host/model、state、task_manifest、staging_dir、时间、失败类别和提交日志。reserved 不代表宿主已启动；mark-running 绑定实际 ID 后才是 running。collect 须声明已确认停止的匹配宿主 ID，检查本次 staging 后才原子提交；重复收集终态 attempt 不重复追加。
 
-探针记录证明成员实际在课程目录写入过 ok；不是工具列表声明。没有有效探针不能派发。dispatched 批次不能重复派发，先确认原成员已经结束，才可 recover 收集落盘成果并释放租约。重试使用新成员，仅分配未完成单元。成员未完成、空文件、源或资源哈希变化、结果被改写，均不得保留未经复核的完成标记。
+状态包括 pending、reserved、running、done、failed、unresolved、needs_review。默认最多 3 次尝试；疑难重试单独派发，超限转用户复核。non_teaching/duplicate 只能经 resolve 保存理由与独立证据，duplicate 必须有实际完成去向。成员不能写台账、meta 或正式输出。
 
-源文件变化时旧版本成果失效，不复用旧 OCR/CLI 转写；重新盘点和 prepare，保留旧文件作历史，不冒充当前来源。继续任务以台账、源哈希和实际文件共同验证，不以旧 Markdown 计划或成员消息恢复完成状态。
+视觉探针独立存储于 `_工作区/能力探针/current.json`，在重型 prepare 前可执行。随机图的实际转写与写入证据、宿主和模型绑定均须通过；只写 ok 不算通过。可靠纯文本全部直写时无需视觉探针；视觉能力失效立即阻塞后续任务，不得目录代写。
 
-全部来源的所有单元 done 或有证据明确排除后，assemble 生成 `资料转写/_分片/` 和逐来源 `*-agent-v1.md`，按原顺序写 BL-PAGE vision 块、正文哈希和总文件哈希，维护转写索引。failed/unresolved 不阻止同批剩余页继续，但阻止正式合成和知识汇总；不通过部分合并选项绕过。
+源文件变化时旧版本成果失效；重新盘点和 prepare，旧提取不冒充当前来源。缓存依据来源哈希、完整提取配置和资产哈希验证，成功输出另有 meta 证据。继续任务以 JSON 台账、源哈希及实际文件共同验证；Markdown 计划是按需报告，不必实时更新。
 
-完成的转写允许按章进入语义阅读，不强制每页再抄区域笔记。覆盖台账 evidence 说明实际阅读与核查方法；visual_reviewed 仅在实际看图时为 true，不把主代理机械收集说成看图。疑难页可交成员读局部图再修订单元，重新 collect；提供了人工区域清单时须校验清单与笔记。详见 [子 Agent 转写](image-first.md)。
+所有来源单元完成或有证据排除后，assemble 直接从单元正式输出生成逐来源 `*-agent-v1.md`；不生成批次分片。BL-PAGE 中可靠文本标记 text，视觉单元标记 vision，仍保留正文与总文件哈希。failed/unresolved/needs_review 或活动租约均阻止合成与知识汇总。
+
+成员/人工发现语义错误时登记实际问题与依据，通过 `reopen` 登记原因并重开对应单元，重新派发和收集；不能只编辑最终来源汇总文件。提供人工区域清单时仍核查清单与笔记。完整操作见 [子 Agent 转写](image-first.md)。
 
 转写状态与知识覆盖独立：文件存在和哈希正确不证明公式、图表和概念正确。所有转写完成后才逐章复核知识，仍要保留未确定的知识表述。
 
@@ -58,9 +62,10 @@
 
 - `kind`：material 或 ai_supplement。材料知识必须有源定位；补充内容说明补充范围和依据，禁止伪装成原材料。
 - `status`：verified 或 unresolved。verified 表示已复核表述及来源，不代表学习者已掌握。
-- 知识分片正文包含稳定锚点 `<a id="K-000001"></a>`。合并后该锚点仍有效。
+- v2 知识分片用 `<!-- BL-K:BEGIN K-000001 --> … <!-- BL-K:END K-000001 -->` 包围每个知识条目，标题后第一行写入口锚点 `K-000001 ^K-000001`。**不要**在段落末尾写 `^K-000001`；边界与锚点是程序判定范围与落点的唯一依据，缺失即 `SECTION_BOUNDARY_INVALID`，不会退化按标题猜测。
+- 分片与 `知识内容.md` 是两处独立落点：分片是维护来源，`知识内容.md` 由 `assemble_knowledge.py` 重建（追加 `BL-CHAPTER` 章节容器与 `IDX-KNOWLEDGE` 目录容器，并渲染关系区）。v2 的 K canonical location 只有 `知识内容.md` 一处；讲义中的同名块是 teaching occurrence，属于另一个已登记落点。
 - `prerequisites` 引用知识 ID。相互依赖概念合理合并；真的存在循环时重构教学拆分，不能任意排序后忽略。
-- `lesson_ids` 至少一个。相应讲义含 `<a id="K-000001"></a>` 供反向定位。补学知识同样登记。
+- `lesson_ids` 至少一个。相应讲义含 `^K-000001` 供反向定位。补学知识同样登记。
 - `core` 明确布尔值。核心候选记录 `core_reason`，例如对目标关键、是关键前置、资料反复强调或题型有覆盖证据。非核心知识仍需教学去向。
 - 核心条目填卡片 ID 和锚点；多条紧密关联知识可共用一卡，卡片必须列出所覆盖知识 ID。卡片 ID 初次按章-节-序分配，重排学习路径不改 ID。
 
@@ -82,7 +87,17 @@ status：covered、duplicate、non_teaching、unreadable、unresolved。covered/
 python SKILL/scripts/assemble_knowledge.py --course COURSE
 ```
 
-只合并标记 complete 的章节；默认遇到未完成章节拒绝写完整汇编。`--allow-partial` 仅用于显式的中间检查，输出标记“未完成”，不能据此交付完整课程。知识正文完整保留，不再次摘要；只将普通 Markdown 相对链接调整到总文件所在目录，生成章节目录。分片使用普通 Markdown 文件/图片链接，跨知识链接使用稳定 ID 锚点；不使用 HTML 相对 href/src 或 Wikilink。分片是维护来源，`知识内容.md` 是可重建的完整视图；修改知识先改分片和索引，再重建总文件。
+只合并标记 complete 的章节；默认遇到未完成章节拒绝写完整汇编。`--allow-partial` 仅用于显式的中间检查，输出标记“未完成”，不能据此交付完整课程。知识正文完整保留，不再次摘要。v2 合并会校验分片中的 `BL-K` 集合与知识索引一致（缺失或多出都拒绝），再追加 `BL-CHAPTER` 与 `IDX-KNOWLEDGE` 容器，最后重新渲染关系区；分片是维护来源，`知识内容.md` 是可重建的完整视图；修改知识先改分片和索引，再重建总文件。附件用 Obsidian embed，知识位置使用稳定块 ID 而非 heading。脚本运行后会同步刷新注册表与 `_工作区/链接映射.json`。
+
+v2 派生与位置数据都由脚本维护，模型不手改：
+
+- `_工作区/路径索引.json`：`{path_id, title, steps:[{id, order, title, lessons}]}`；缺省时按 lesson order 推导，一旦显式登记就以文件为准。
+- `_工作区/练习索引.jsonl`：每行 `{id, owner_lesson_id, status: reserved|used, assesses:[K-ID], source_refs:[{source_id, unit_id}], title}`。只有 `used` 且被卡片计划引用才成为关系目标。
+- `_工作区/管理文档索引.json`：`{documents:[{id, path, title, entry, links:[{target_id, subtype, reason}]}]}`，管理文档的出边只来自这里登记的记录。
+- `_工作区/开始入口.json`：`{entries:[{target_id, subtype}], management:[M-ID], index_entry: bool}`，控制 START 的 NAV.entry / NAV.management。
+- `_工作区/实体注册表.json`：实体身份、canonical/teaching/unit 位置、状态、墓碑（合并去向）与结构版本；交付后仍保留，供 packaged 复验使用，不当作临时产物删除。
+- `_工作区/链接映射.json`：schema 2，含 `registry_revision`、`locations[]` 与旧适配键（knowledge/lessons/sources/cards）。
+- `_工作区/事务记录.jsonl`：多文件提交日志与备份索引；`_工作区/事务备份/` 保存提交前内容，中断可回滚。
 
 ## 进度与反馈
 
@@ -97,3 +112,18 @@ python SKILL/scripts/assemble_knowledge.py --course COURSE
 `学习反馈.md` 保存实际作答、复测、错因和历史证据。卡片只存当前快照。不得重建文件时覆盖用户填写内容，也不能把生成进度当作学习进度。
 
 长文默认按章保存。只有实际发生容量不足或中断时，才在既有 `生成进度.json` 的 `next_action` 中记录未完成章/节和续写位置；不另建写作分段状态系统。
+
+## 用户明确要求 AI 补全的例外路径
+
+视觉能力失败时默认停止并建议换模型，不擅自降级为目录扩写。只有用户直接要求 AI 补全/根据目录重新编写时，才保存其原话和范围到课程内请求记录。此路径的产物必须如实标注未读原件及覆盖限制，不能声明原资料已全部处理。
+
+先建立章节知识分片与知识索引（本例外路径的条目全部 kind=ai_supplement），再运行：
+
+```text
+python -X utf8 SKILL/scripts/assemble_knowledge.py --course COURSE --ai-request _工作区/用户AI补全请求.md
+python -X utf8 SKILL/scripts/assemble_knowledge.py --course COURSE --check
+```
+
+--ai-request 只是记录已经获得的用户明确指令，不能自行创建请求文件冒充授权。它不解锁原件转写、不清除待核实状态，也不让原资料完整性验收变为通过。脚本保存请求版本用于写作前核查。必须以生成的知识内容.md为核心，再规划路径、写讲义与卡片；没有用户授权、知识分片未完成或知识库未生成时不得继续。正常资料路径不使用该选项。
+
+章级任务、核心卡片快照和输入失效见 [讲义流水线](lesson-pipeline.md)。身份、路径映射、双链与迁移见 [Obsidian 规范](obsidian-links.md)。

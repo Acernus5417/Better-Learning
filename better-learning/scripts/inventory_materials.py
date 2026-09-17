@@ -29,6 +29,7 @@ def inventory(course: Path, inputs: list[Path]) -> dict:
         raise ValueError('No input files outside the output course directory')
     work = course / '_工作区'
     index_file = work / '资料索引.json'
+    new_course = not index_file.exists()
     previous = read_json(index_file) if index_file.exists() else {'sources': [], 'next_id': 1}
     by_path = {s['path']: s for s in previous['sources']}
     next_id = max(previous.get('next_id', 1), 1 + max(
@@ -40,9 +41,12 @@ def inventory(course: Path, inputs: list[Path]) -> dict:
         sid = old['id'] if old else f'SRC-{next_id:03d}'
         if not old:
             next_id += 1
-        digest = sha256(path)
+        stamp = path.stat()
+        digest = (old['sha256'] if old and old.get('size') == stamp.st_size
+                  and old.get('mtime_ns') == stamp.st_mtime_ns and old.get('ctime_ns') == stamp.st_ctime_ns
+                  else sha256(path))
         entry = {'id': sid, 'path': str(path), 'name': path.name,
-                 'sha256': digest, 'size': path.stat().st_size,
+                 'sha256': digest, 'size': stamp.st_size, 'mtime_ns': stamp.st_mtime_ns, 'ctime_ns': stamp.st_ctime_ns,
                  'format': path.suffix.lower().lstrip('.') or 'unknown'}
         if digest in hashes:
             entry['duplicate_of'] = hashes[digest]
@@ -53,6 +57,12 @@ def inventory(course: Path, inputs: list[Path]) -> dict:
         (s['id'], s['path'], s['sha256']) for s in previous['sources']}
     data = {'schema_version': 1, 'next_id': next_id, 'sources': sources}
     write_json(index_file, data)
+    if new_course:
+        from obsidian_links import initialize
+        initialize(course)
+    elif changed:
+        from lesson_tasks import invalidate
+        invalidate(course, 'materials changed')
     rows = ['# 资料清单', '', '本清单由盘点脚本生成；资料范围是否齐全由用户确认，记录在学习需求及进度中。', '',
             '| ID | 文件 | 格式 | 字节数 | 完全重复来源 |', '| --- | --- | --- | --- | --- |']
     for s in sources:

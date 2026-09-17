@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from _common import extraction_path, inside, read_json, rel, sha256, source_index, write_json
+from _common import validation_run, validation_context, extraction_path, inside, read_json, rel, sha256, source_index, write_json
 
 
 def boxes(width, height, tile_width=1280, tile_height=1600, overlap=128):
@@ -21,6 +21,7 @@ def boxes(width, height, tile_width=1280, tile_height=1600, overlap=128):
             for y in offsets(height, tile_height) for x in offsets(width, tile_width)]
 
 
+@validation_run
 def check_manifest(course: Path, data: dict, require_read=False) -> list[str]:
     errors = []
     source = next((s for s in source_index(course)['sources'] if s['id'] == data['source_id']), None)
@@ -33,6 +34,8 @@ def check_manifest(course: Path, data: dict, require_read=False) -> list[str]:
         errors.append('视觉图像不是当前源单元的图像')
     if sha256(inside(course, data['image'])) != data['image_hash']:
         errors.append('视觉图像已变更，需要重新准备')
+    if data.get('overview_hash') and sha256(inside(course, data['overview'])) != data['overview_hash']:
+        errors.append('视觉概览已变更')
     expected = boxes(*data['dimensions'], **data['config'])
     if [t['box'] for t in data['tiles']] != [list(b) for b in expected]:
         errors.append('视觉分块未完整覆盖页面')
@@ -92,7 +95,7 @@ def prepare(course, sid, uid, tile_width=1280, tile_height=1600, overlap=128, im
         overview.save(overview_path, quality=85)
         data = {'schema_version': 1, 'source_id': sid, 'source_hash': source['sha256'],
                 'unit_id': uid, 'image': image_rel, 'image_hash': digest,
-                'dimensions': list(image.size), 'overview': rel(course, overview_path),
+                'dimensions': list(image.size), 'overview': rel(course, overview_path), 'overview_hash': sha256(overview_path),
                 'config': config, 'tiles': []}
         for number, box in enumerate(regions, 1):
             target = directory / f'V{number:04d}.png'
@@ -122,6 +125,23 @@ def record(course, manifest, tile_id, note, status='read'):
     tile.update(status=status, note=note, note_hash=sha256(note_path))
     write_json(path, data)
     return summary(course, path, data)
+
+
+@validation_run
+def strict_assets(course, sid, uid):
+    source = next(s for s in source_index(course)['sources'] if s['id'] == sid)
+    unit = next(u for u in read_json(extraction_path(course, source) / '定位映射.json')['units'] if u['id'] == uid)
+    manifests, overviews, tiles, hashes = [], [], [], {}
+    for i in range(1, len(unit['images']) + 1):
+        result = prepare(course, sid, uid, image_index=i)
+        data = read_json(inside(course, result['manifest']))
+        manifests.append(result['manifest'])
+        overviews.append(str(inside(course, data['overview'])))
+        for tile in data['tiles']:
+            tiles.append({'id': f'I{i}-{tile["id"]}', 'path': str(inside(course, tile['path'])), 'box': tile['box']})
+            hashes[tile['path']] = sha256(inside(course, tile['path']))
+        hashes[data['overview']] = sha256(inside(course, data['overview']))
+    return {'manifests': manifests, 'overviews': overviews, 'tiles': tiles, 'hashes': hashes}
 
 
 def main():

@@ -8,11 +8,27 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from _common import extraction_path, inside, read_json, read_jsonl, sha256, source_index, write_json
+from _common import validation_run, validation_context, extraction_path, inside, read_json, read_jsonl, sha256, source_index, write_json
 from assemble_knowledge import build_content
+from entity_registry import Registry, config as course_config, document as registry_document, is_v2
+from entity_sections import SectionError, parse_sections
 
 REQUIRED = ['开始学习.md', '学习需求.md', '资料清单.md', '知识内容.md', '学习路径.md',
             '核心知识点.md', '学习反馈.md', '质量报告.md']
+SNAPSHOT = '_工作区/链接校验报告.json'
+MODES = ('legacy-report', 'staged', 'final', 'packaged')
+
+
+def find_document(course, name):
+    """Look in both layouts: course root and 课程文档/. Never assume only one."""
+    for candidate in (name, '课程文档/' + name):
+        if (course / candidate).is_file():
+            return course / candidate
+    return course / name
+
+
+def code(prefix, message):
+    return f'[{prefix}] {message}' if prefix else message
 
 
 def without_code(text: str) -> str:
@@ -23,6 +39,8 @@ def without_code(text: str) -> str:
 def anchors(text: str) -> tuple[set[str], list[str]]:
     text = without_code(text)
     explicit = re.findall(r'<a\s+[^>]*id=["\']([^"\']+)["\'][^>]*>', text, re.I)
+    from obsidian_links import block_ids
+    explicit += block_ids(text)
     result = set(explicit)
     seen = Counter()
     for match in re.finditer(r'^#{1,6}\s+(.+?)\s*#*\s*$', text, re.M):
@@ -49,11 +67,17 @@ def destinations(text: str) -> list[str]:
     return result
 
 
-def validate(course: Path) -> dict:
+@validation_run
+def validate(course: Path, mode: str = 'final') -> dict:
+    if mode not in MODES:
+        raise ValueError('Unknown validator mode: ' + mode)
+    phase = {'legacy-report': 'working', 'staged': 'staged'}.get(mode, mode)
     course = course.resolve()
     errors = []
     warnings = ['结构检查不证明教学正确性、公式渲染或实际学习效果；须完成内容复核。']
     counts = {'sources': 0, 'units': 0, 'knowledge': 0, 'lessons': 0, 'cards': 0}
+    v2 = is_v2(course)
+    registry_obj = Registry(course) if v2 else None
 
     def fail(message):
         errors.append(message)
@@ -68,7 +92,7 @@ def validate(course: Path) -> dict:
 
     def file(relative):
         try:
-            path = inside(course, relative)
+            path = find_document(course, relative)
             if not path.is_file() or not path.stat().st_size:
                 fail('缺少或为空：' + relative)
                 return None
@@ -152,6 +176,7 @@ def validate(course: Path) -> dict:
 
     knowledge = load('_工作区/知识索引.jsonl', lines=True, fallback=[])
     counts['knowledge'] = len(knowledge)
+    knowledge = [k for k in knowledge if k.get('status') != 'merged']
     known = {k['id']: k for k in knowledge}
     if not knowledge:
         fail('没有知识条目')
@@ -165,6 +190,30 @@ def validate(course: Path) -> dict:
             cache[relative] = anchors(path.read_text(encoding='utf-8-sig'))[0] if path else set()
         return cache[relative]
 
+    knowledge_doc = registry_document(course, '知识内容.md')
+    cards_doc = registry_document(course, '核心知识点.md')
+    parsed = {}
+    if v2:
+        for label, relative, kind in (('knowledge', knowledge_doc, 'K'), ('cards', cards_doc, 'KP')):
+            try:
+                text = (course / relative).read_text(encoding='utf-8-sig')
+                parsed[label] = parse_sections(text, None, strict_registry=False)
+            except (OSError, SectionError) as exc:
+                fail(code('SECTION_BOUNDARY_INVALID', f'{relative}: {exc}'))
+                parsed[label] = None
+
+    def has_section(label, kind, section_id):
+        index = parsed.get(label)
+        return bool(index and index.get(kind, section_id))
+
+    def fragment_has(relative, kind, section_id):
+        try:
+            index = parse_sections((course / relative).read_text(encoding='utf-8-sig'), None, strict_registry=False)
+        except (OSError, SectionError) as exc:
+            fail(code('SECTION_BOUNDARY_INVALID', f'{relative}: {exc}'))
+            return None
+        return bool(index.get(kind, section_id))
+
     for k in knowledge:
         kid = k['id']
         if k.get('status') != 'verified':
@@ -172,9 +221,14 @@ def validate(course: Path) -> dict:
         chapter = chapter_by_id.get(k.get('chapter_id'))
         if not chapter:
             fail('知识没有有效分片：' + kid)
+        elif v2:
+            if not has_section('knowledge', 'K', kid):
+                fail(code('SECTION_BOUNDARY_INVALID', '知识总文件缺少 BL-K 区间：' + kid))
+            if fragment_has(chapter['path'], 'K', kid) is False:
+                fail(code('SECTION_BOUNDARY_INVALID', '知识分片缺少 BL-K 区间：' + kid))
         elif k.get('anchor') not in get_anchors(chapter['path']):
             fail('知识分片缺少条目锚点：' + kid)
-        if k.get('anchor') not in get_anchors('知识内容.md'):
+        if not v2 and k.get('anchor') not in get_anchors('知识内容.md'):
             fail('知识总文件缺少条目锚点：' + kid)
         if k.get('kind') not in {'material', 'ai_supplement'}:
             fail('知识 kind 无效：' + kid)
@@ -189,6 +243,9 @@ def validate(course: Path) -> dict:
             lesson = lesson_by_id.get(lid)
             if not lesson:
                 fail('知识引用不存在的学习章节：' + kid + ' → ' + lid)
+            elif v2:
+                if fragment_has(lesson['path'], 'TEACH', f'{lid}-{kid}') is False:
+                    fail(code('SECTION_BOUNDARY_INVALID', f'学习章节缺少教学区间 {lid}-{kid}'))
             elif k.get('anchor') not in get_anchors(lesson['path']):
                 fail('学习章节缺少知识锚点：' + kid + ' → ' + lid)
         for dependency in k.get('prerequisites', []):
@@ -201,11 +258,18 @@ def validate(course: Path) -> dict:
                 fail('核心知识缺少筛选依据：' + kid)
             if not re.fullmatch(r'KP-\d{2,}-\d{2,}-\d{2,}', k.get('card_id', '')):
                 fail('核心卡片 ID 无效：' + kid)
-            if k.get('card_anchor') != k.get('card_id') or k.get('card_anchor') not in get_anchors('核心知识点.md'):
+            if v2:
+                if not has_section('cards', 'KP', k.get('card_id', '')):
+                    fail(code('SECTION_BOUNDARY_INVALID', '核心知识点缺少 BL-KP 区间：' + kid))
+            elif k.get('card_anchor') != k.get('card_id') or k.get('card_anchor') not in get_anchors('核心知识点.md'):
                 fail('核心知识缺少对应卡片：' + kid)
     counts['cards'] = len({k.get('card_id') for k in knowledge if k.get('core') and k.get('card_id')})
     indexed_cards = {k.get('card_id') for k in knowledge if k.get('core') and k.get('card_id')}
-    actual_cards = {a for a in get_anchors('核心知识点.md') if re.fullmatch(r'KP-\d{2,}-\d{2,}-\d{2,}', a)}
+    if v2:
+        actual_cards = {section.id for section in (parsed.get('cards') or parse_sections('')).sections.values()
+                        if section.kind == 'KP'}
+    else:
+        actual_cards = {a for a in get_anchors('核心知识点.md') if re.fullmatch(r'KP-\d{2,}-\d{2,}-\d{2,}', a)}
     for orphan in sorted(actual_cards - indexed_cards):
         fail('卡片没有对应知识条目：' + orphan)
     if knowledge and not counts['cards']:
@@ -313,22 +377,27 @@ def validate(course: Path) -> dict:
     counts['coverage'] = dict(statuses)
 
     try:
-        expected = build_content(course)
+        expected = build_content(course, validate_transcripts=str(course.resolve()) not in validation_context().transcripts_checked)
         actual = (course / '知识内容.md').read_text(encoding='utf-8')
         if actual != expected:
             fail('知识内容.md 与知识分片不一致，请重新运行合并脚本')
     except (OSError, ValueError, KeyError) as exc:
         fail('知识汇编检查失败：' + str(exc))
 
+    if v2:
+        for error in validate_source_shells(course):
+            fail(error)
     # Check learner-facing Markdown plus indexed chapter fragments, not extracted source text.
     paths = [p for p in course.rglob('*.md') if '_工作区' not in p.relative_to(course).parts]
     for p in paths:
+        if any(part in {'资料转写', '原始资料'} for part in p.relative_to(course).parts): continue
         body = p.read_text(encoding='utf-8-sig')
         _, duplicates = anchors(body)
         if duplicates:
             fail(f'{p.name}: 重复锚点 {duplicates}')
-        if re.search(r'\[\[[^\]\n]+\]\]', without_code(body)):
-            fail(p.name + ': 使用了未验证的 Wikilink，请改为普通 Markdown 链接')
+        from obsidian_links import enabled, validate_document
+        if enabled(course):
+            for error in validate_document(course, body): fail(p.name + ': ' + error)
         for target in destinations(body):
             parsed = urlsplit(target)
             if parsed.scheme in {'https', 'http', 'mailto', 'data'}:
@@ -345,20 +414,127 @@ def validate(course: Path) -> dict:
                 target_anchors = anchors(destination.read_text(encoding='utf-8-sig'))[0]
                 if unquote(parsed.fragment) not in target_anchors:
                     fail(f'{p.name}: 锚点不存在 {target}')
-    return {'schema_version': 1, 'passed': not errors, 'counts': counts,
-            'errors': list(dict.fromkeys(errors)), 'warnings': warnings}
+    from obsidian_links import enabled, validate_obsidian_links
+    if enabled(course):
+        for error in validate_obsidian_links(course, phase=phase):
+            fail(code('LINKS', error))
+    if v2 and mode != 'legacy-report':
+        from obsidian_links import validate_links
+        for relative, text in learner_texts(course).items():
+            for diagnostic in validate_links(course, text, registry_obj=registry_obj, phase=phase):
+                fail(code(diagnostic['code'], f"{relative}: {diagnostic['message']}"))
+        for relative, text in learner_texts(course).items():
+            try:
+                parse_sections(text, None, strict_registry=False)
+            except SectionError as exc:
+                fail(code(exc.code, f'{relative}:{exc.line}: {exc.message}'))
+    if enabled(course) or (course / '_工作区/讲义任务.json').exists():
+        from lesson_tasks import check as check_lessons
+        from core_cards import check as check_cards
+        for error in check_lessons(course) + check_cards(course): fail(error)
+    report = {'schema_version': 2, 'mode': mode, 'passed': not errors, 'counts': counts,
+              'errors': list(dict.fromkeys(errors)), 'warnings': warnings,
+              'layout': course_config(course).get('layout', 'working'),
+              'graph_policy_version': course_config(course).get('graph_policy_version')}
+    if v2 and mode == 'final' and not errors:
+        snapshot = {'schema_version': 1, 'mode': 'final',
+                    'files': {relative: sha256(course / relative)
+                              for relative in learner_texts(course)},
+                    'registry_revision': registry_obj.revision() if registry_obj else None}
+        write_json(course / SNAPSHOT, snapshot)
+        report['snapshot'] = SNAPSHOT
+    if v2 and mode == 'packaged':
+        for problem in validate_packaged(course, snapshot_receipt(course), errors):
+            fail(problem)
+        report['passed'] = not errors
+        report['errors'] = list(dict.fromkeys(errors))
+    return report
+
+
+def snapshot_receipt(course):
+    path = course / SNAPSHOT
+    return read_json(path) if path.exists() else {}
+
+
+def learner_texts(course):
+    result = {}
+    for path in sorted(course.rglob('*.md')):
+        parts = path.relative_to(course).parts
+        if any(part in {'资料转写', '原始资料'} for part in parts):
+            continue
+        if '_工作区' in parts:
+            continue
+        result[path.relative_to(course).as_posix()] = path.read_text(encoding='utf-8-sig')
+    return result
+
+
+def validate_source_shells(course):
+    """Source fidelity: managed shell + precise payload exemption, never a blank skip."""
+    from obsidian_links import validate_links
+    problems = []
+    index_path = course / '_工作区/转写索引.json'
+    if not index_path.exists():
+        return problems
+    for entry in read_json(index_path).get('sources', []):
+        if entry.get('shell') != 'v2':
+            continue
+        path = inside(course, entry['path'])
+        text = path.read_text(encoding='utf-8-sig')
+        try:
+            index = parse_sections(text, None, strict_registry=False)
+        except SectionError as exc:
+            problems.append(code(exc.code, f'{entry["path"]}:{exc.line}: {exc.message}'))
+            continue
+        if index.get('SOURCE', entry['source_id']) is None:
+            problems.append(code('SECTION_BOUNDARY_INVALID', f'{entry["path"]}: 缺少 BL-SOURCE 外壳'))
+            continue
+        if any(section.kind == 'REL' for section in index.sections.values()):
+            problems.append(code('SOURCE_NOT_LEAF', f'{entry["path"]}: 来源文件不得包含关系区'))
+        for payload in entry.get('payloads', []):
+            uid = f"{entry['source_id']}-{payload['unit_id']}"
+            if index.get('SRC', uid) is None:
+                problems.append(code('SECTION_BOUNDARY_INVALID', f'{entry["path"]}: 缺少来源单元 {uid}'))
+        spans = [(section.body_start, section.body_end) for section in index.sections.values()
+                 if section.kind == 'SOURCE-TEXT']
+        for diagnostic in validate_links(course, text, require_targets=False, payload_spans=spans,
+                                         phase='working'):
+            if diagnostic['code'] != 'BLOCK_REQUIRED':
+                problems.append(code(diagnostic['code'], f'{entry["path"]}: {diagnostic["message"]}'))
+    return problems
+
+
+def validate_packaged(course, snapshot, errors):
+    """Packaged layout: targets must re-resolve from retained receipts."""
+    from obsidian_links import validate_obsidian_links
+    problems = []
+    if not snapshot:
+        problems.append(code('STALE_MANIFEST', '缺少 final 阶段快照，无法证明打包后目标仍可解析'))
+    for relative, digest in (snapshot.get('files') or {}).items():
+        path = find_document(course, relative.split('/')[-1]) if not (course / relative).exists() else course / relative
+        if not path.is_file():
+            problems.append(code('MISSING_TARGET_BLOCK', '打包后缺少文件：' + relative))
+            continue
+        import hashlib
+        current = hashlib.sha256(path.read_bytes()).hexdigest()
+        if current != digest:
+            problems.append(code('STALE_MANIFEST', '打包后文件内容与 final 快照不一致：' + relative))
+    for error in validate_obsidian_links(course, phase='packaged'):
+        problems.append(code('LINKS', error))
+    return problems
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--course', type=Path, required=True)
+    parser.add_argument('--mode', default='final', choices=list(MODES),
+                        help='legacy-report|staged|final|packaged; v2 strict modes never accept legacy syntax')
     args = parser.parse_args()
     try:
-        report = validate(args.course)
+        report = validate(args.course, args.mode)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-        report = {'schema_version': 1, 'passed': False,
+        report = {'schema_version': 2, 'mode': args.mode, 'passed': False,
                   'errors': ['数据结构不完整或无法执行检查：' + str(exc)], 'warnings': []}
-    write_json(args.course / '_工作区' / '结构检查.json', report)
+    write_json(args.course / '_工作区' / ('结构检查.json' if args.mode != 'packaged' else '打包检查.json'), report)
     print(json.dumps(report, ensure_ascii=False))
     return 0 if report['passed'] else 1
 

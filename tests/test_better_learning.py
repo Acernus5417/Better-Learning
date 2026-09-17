@@ -15,7 +15,13 @@ sys.path.insert(0, str(SCRIPTS))
 from _common import atomic_text, extraction_path, read_json, write_json
 from assemble_knowledge import build_content
 from extract_materials import extract
-from inventory_materials import inventory
+from inventory_materials import inventory as actual_inventory
+
+def inventory(course, inputs):
+    result = actual_inventory(course, inputs)
+    (course / "_工作区/课程配置.json").unlink(missing_ok=True)
+    return result
+
 from validate_package import REQUIRED, validate
 from transcribe_materials import initialize as init_transcripts, record as record_transcript
 

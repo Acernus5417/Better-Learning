@@ -9,16 +9,16 @@
 | 新建执行体 | 全新上下文：不继承主对话历史、看不到主代理已读过的文件 |
 | 可写 | 能把正文落盘到分配的输出路径 |
 | 能看图 | 能把指定 PNG 真正交给视觉模型（不是靠文件名推断） |
-| 返回 | 只回约定的短状态字段，不回正文与工具清单 |
+| 返回 | 只回约定的短状态字段，不回正文与工具清单；写 attempt staging，不直接写正式结果 |
 | 可确认停止 | 用于 `recover` 前确认旧成员确实已结束 |
 
-调度脚本 `convert_materials.py` 内置 `HOSTS` 表，`dispatch --host <名称>` 会把对应宿主的写工具名、看图工具名注入成员提示词。
+适配模块 `host_agents.py` 提供 `HOSTS` 表，`dispatch --host <名称>` 把对应宿主工具写入 task.json，主代理仅转发 bootstrap，成员自读任务。启动成功须 mark-running 登记真实 Agent ID；确认停止后 collect。
 
 ## 二、三宿主映射
 
 ```text
 python -X utf8 SKILL/scripts/convert_materials.py --course COURSE dispatch \
-  --source SRC-001 --batch B01 --host codebuddy
+  --source SRC-001 --batch B01 --host codebuddy --model ACTUAL_MODEL
 ```
 
 | | **codex** | **codebuddy** | **claude** |
@@ -27,9 +27,9 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE dispatch \
 | 写文件 | `apply_patch` | `write_to_file` / `replace_in_file` | `Write` / `Edit` |
 | 看图 | `view_image` | `read_file`（可直接读 PNG） | `Read`（可直接读图片） |
 | 读文本 | `tools.mcp__node_repl__js` 的 `node:fs/promises` | `read_file` | `Read` |
-| 确认停止 | 宿主接口确认线程结束或终止 | `send_message` 发 `shutdown_request` | `TaskStop` |
+| 确认停止 | 宿主接口确认线程结束或终止 | 宿主完成/停止回执；需主动停止时 `send_message` 发 `shutdown_request` 并等确认 | `TaskStop` 或确认子代理已返回 |
 | 只读陷阱 | 内置 `explorer`；`sandbox_mode="read-only"` | 内置 `code-explorer`（工具集仅 search/read/lsp） | 内置 `Explore` / `Plan`（明确拒绝 Write/Edit） |
-| 并发控制 | `[agents] max_concurrent_threads_per_session` | 本流程限制 `--max-concurrent 2` | `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`（默认 20） |
+| 并发控制 | `[agents] max_concurrent_threads_per_session` | 本流程默认4；--host-limit 按宿主可用量覆盖 | `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`（默认 20） |
 | 防嵌套 | 成员不派生 | 成员无 `task` 工具 | 从 `tools` 省略 `Agent`，或设 `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` |
 
 ### 2.1 codex
@@ -46,6 +46,7 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE dispatch \
   - **团队成员**（`name` + `mode`）：异步、独立上下文、工具集完整（含 `write_to_file` / `replace_in_file` / `execute_command`），**这是本流程要用的形态**。
 - `mode` 取 `acceptEdits`（自动接受文件编辑）即可；`bypassPermissions` 更强但不必要。
 - 团队管理：`team_delete` 清理；成员可通过 `send_message` 主动回推——因此提示词里的"只回 5 行、不要工具清单"是硬要求。
+- 调度接收团队成员的短完成通知与宿主终态回执，这属于元数据，不违反“主代理不读正文”。不要执行 `execute_command` 的 sleep 120/170 秒后再查 status。Python `status` 仅汇总主代理维护的台账，不查询 CodeBuddy 宿主；成员写齐文件也不能证明它已停止。成员正常完成时使用真实完成回执；只有需主动停止或当前宿主要求 shutdown 才发 `shutdown_request`，并等停止确认后 collect，不能刚发请求就声明已停止。
 
 ### 2.3 claude
 
@@ -81,29 +82,48 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE dispatch \
 | `Task` 且能传 `name` 与 `mode` | `--host codebuddy` |
 | `Agent` 或 `Task` 且能传 `subagent_type` | `--host claude` |
 
-不确定时：先跑 `probe`（见下节），用能成功写出 `ok` 的那个宿主。
+不确定时：先跑 `probe`（见下节），用实际通过视觉转写与写入双能力探针的宿主和模型。
 
-## 四、探针仍然必须做
+## 四、探针必须验证实际视觉转写
 
-`prepare` 之后、`dispatch` 之前，必须用**目标宿主**建一个最小成员写出 `_工作区/probe.txt` 内容为 `ok`，然后：
+先用 probe-start --host HOST --model ACTUAL_MODEL 生成随机测试图，再用**相同模型与宿主**派新成员，严格限制其只能看图并保存响应；最后 probe --member REAL_MEMBER --host HOST --model ACTUAL_MODEL 校验。具体命令与响应要求见 [图像流程](image-first.md)。
 
-```text
-python -X utf8 SKILL/scripts/convert_materials.py --course COURSE probe --member REAL_MEMBER
-```
-
-脚本会**实际读取磁盘内容**判定，工具清单或口头成功一律不算。这一步正是用来提前发现"选成了只读子代理"——三个宿主都有只读探索型子代理，名字不同但都不能写。
+只写 ok、可调用看图工具、声称支持图片，都不能替代实际转写通过。未通过立即停止任务并建议用户换模型；模型改变重新探测。不允许成员读取随机图答案、验证器状态或以目录猜写替代识图。
 
 ## 五、三个共同陷阱
 
 1. **只读子代理陷阱**（最常踩）：`explorer`（codex）/ `code-explorer`（codebuddy）/ `Explore`·`Plan`（claude）都能看图，却都写不了文件。若用它做转写，成员会"看完了但存不下"，隔离反而白做。
-2. **成员不继承主对话**（claude 与 codebuddy 明确如此，codex 用 `fork_turns="none"` 保证）：提示词必须自带**全部绝对路径**，不能写"上面提到的那张图"。
+2. **成员不继承主对话**（claude 与 codebuddy 明确如此，codex 用 `fork_turns="none"` 保证）：bootstrap 必须提供**任务与策略绝对路径**，任务内包含分配资源路径，不能写"上面提到的那张图"。
 3. **成员会多说**：实测中即便要求"只回三行"，成员仍可能附上工具清单。因此返回格式必须是**固定字段名 + 禁止附言**的硬约束。
 
 ## 六、新增一个宿主
 
 两处改动即可：
 
-1. 在 `scripts/convert_materials.py` 的 `HOSTS` 表加一项：`spawn` / `write` / `read_image` / `read_text` / `stopped`。
+1. 在 `scripts/host_agents.py` 的 `HOSTS` 表加一项：`spawn` / `write` / `read_image` / `read_text` / `stopped`。
 2. 在本文件第二、三节补一行映射。
 
 不需要改 `prepare` / `collect` / `assemble` / `check`——它们完全宿主无关。
+
+正常调度由 pump 返回 spawn tickets；主代理调用宿主工具并 mark-running。任一完成事件先确认停止再 collect，优先启动 refill，不等待整个批次池清空。转写与章级讲义共用 host_agents / agent_pool 契约；并发上限是业务配置，不代表宿主一定有同等空闲容量。
+
+## 七、完成事件与等待
+
+此规则同时用于转写和章级讲义。Python 只在调用 pump / collect 时执行，不是后台守护进程；collect 内的 refill 不会在主代理休眠时自行触发。
+
+Codex 的正常宿主循环：
+
+1. pump → 对返回的 tickets 启动成员 → 逐个 mark-running。
+2. 先处理已到达的完成通知；通知中的 attempt 与真实 Agent ID 必须匹配台账。成员文字说 DONE 仍需宿主终态确认，不能凭文件存在推断已停止。
+3. 每确认一个成员完成就 collect，立即启动其 refill 并 mark-running，然后处理下一条通知；不先等待剩余成员，不先做长篇汇报。
+4. 没有未处理的完成通知、仍有活动成员且无必要本地工作时，调用 `collaboration.wait_agent({"timeout_ms": 30000})` 等待任一成员消息。这是事件等待，消息到达会提前返回，30000 是超时上限，不是必须睡满的间隔。单次等待不超过 60000 毫秒。
+5. 返回后先区分完成、普通进度、用户输入和等待超时；必要时用 `collaboration.list_agents` 查询当前任务成员的宿主状态。完成即回到第 3 步；进度/等待超时不释放租约、不算失败、不消耗重试次数。不要在事件已到达后额外 sleep。
+6. 队列与活动成员均为空才结束。若队列有任务但没有活动成员，先 pump 或处理明确阻塞，不进入空等。
+
+不要用 `clock.sleep`、`time.sleep`、`Start-Sleep` 或长时间 shell 循环观察输出文件来代替成员通知。不能把通用“等待更久减少轮询”的建议理解为固定休眠；真正能被任一成员完成事件唤醒的等待不会强制睡满超时值。
+
+其他宿主优先使用本会话实际提供的异步完成通知/任一成员等待能力，不猜工具名或参数；查看当前工具 schema。只有确实没有完成事件接口时，才退化为不超过 10 秒的短轮询，每次检查全部当前活动成员并逐个收集补位。没有任何状态变化时不反复运行 pump、读取全台账或正文。
+
+两类 status 不可混淆：`convert_materials.py status` / `lesson_tasks.py status` 查询课程台账，宿主成员状态接口查询实际执行状态。前者不监听子代理，也不会因为 staging 文件已写齐自动把 running 改成完成；因此仅循环“睡眠 → 脚本 status”不能实现完成即补位。接收宿主短完成消息、查询成员状态都属于允许的元数据操作。
+
+排查延迟时分别核对“宿主确认完成 → collect 开始 → refill 返回 → 新成员启动”的时间。UI 显示等待持续 170 秒不能单独证明补位延迟；若调用是固定休眠，或完成事件已到达却未收集，才是此循环执行不正确。该流程保证收到完成事件后优先补位，实际延迟还包括宿主消息投递、工具排队和输出校验耗时。

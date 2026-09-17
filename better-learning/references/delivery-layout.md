@@ -12,7 +12,7 @@
 | codebuddy | 用 `send_message` 发 `shutdown_request`，确认后 `team_delete` 清理团队 |
 | claude | 用 `TaskStop` 停止，或确认该 subagent 已返回 |
 
-`package` 会拒绝在有活跃租约（`_工作区/转写任务.json` 里的 `active_member`）时执行，所以这一步不能跳过。同理 `assemble` 也不会在有 `dispatched` 单元时通过——两者互为前置。
+`package` 会拒绝在有活跃租约（`_工作区/转写任务.json` 里的 `active_member`）时执行，所以这一步不能跳过。同理 `assemble` 也不会在有 reserved/running 租约或未完成单元时通过——两者互为前置。
 
 ## 二、package：清理与归置
 
@@ -27,13 +27,13 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE package
 
 | 路径 | 说明 |
 | --- | --- |
-| `资料转写/_分片/` | 批次分片，已并入来源转写 |
+| `_工作区/转写尝试/` | 尝试暂存文件，成功结果已原子提交并合成来源转写 |
 | `_工作区/派发提示/` | 成员提示词，一次性 |
 | `_工作区/提取内容/` | 逐页渲染图、文本块、单元转写副本、识别证据——**体积主体** |
 
 **保留**：`_工作区/` 下的台账与索引（`转写任务.json`、`资料索引.json`、`章节索引.json`、`知识索引.jsonl`、`覆盖台账.jsonl`、`生成进度.json`、`结构检查.json`），供追溯与审计。
 
-**归置**：把报告与说明类 Markdown 移入 `课程文档/`，并重算所有学习者可见 Markdown 的相对链接。
+**归置**：把报告与说明类 Markdown 移入 `课程文档/`，并按 canonical map 重写 WikiLink，兼容重算旧 Markdown 相对链接。
 
 ## 三、最终交付结构
 
@@ -98,3 +98,7 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE package
 | `https://x.com/a.md` | 不变 |
 
 **打包前应已通过 `validate_package.py`**——它检查链接可达性，能在移动前发现断链；`package` 只负责搬家，不负责修复本来就断的链接。
+
+新 Obsidian 课程中，`[[知识内容#^K-01]]` 在打包后变成 `[[课程文档/知识内容#^K-01]]`。打包后再次验证双链，并记录纯路径变化的讲义/卡片提交快照；不把路径移动误判为教学内容变化。讲义 staging 也会被清理。
+
+打包必须保留重验所需数据：`_工作区/课程配置.json`、`实体注册表.json`、`链接映射.json`、`链接校验报告.json`、`核心卡片计划.json`、`练习索引.jsonl`、`路径索引.json`、`管理文档索引.json` 与 `事务记录.jsonl` 都不属于中间产物。`package` 收尾后运行 `validate_package.py --mode packaged`：它核对交付文件与 final 快照、目标是否仍能解析、块是否仍唯一；中间产物已清理不影响判定，交付文件内容与快照不一致报 `STALE_MANIFEST`。

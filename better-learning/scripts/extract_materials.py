@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import unquote
 
-from _common import atomic_text, extraction_path, read_json, rel, sha256, source_index, write_json
+from _common import validation_run, validation_context, atomic_text, extraction_path, read_json, rel, sha256, source_index, write_json
 
 
 def tag(element):
@@ -118,6 +118,9 @@ REL_NS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
 LAYOUT_VERSION = 2
 
 
+EXTRACTOR_VERSION = 3
+
+
 def mixed_part(z, part, locator, limit):
     """Walk XML in document/shape order; emit images at their actual reference."""
     rs = relationships(z, part)
@@ -171,8 +174,17 @@ def mixed_part(z, part, locator, limit):
         if len(pending) >= limit or name in {'sp', 'graphicFrame'}:
             flush()
 
-    walk(ET.fromstring(z.read(part)))
+    root = ET.fromstring(z.read(part))
+    visual_tags = {'chart', 'relIds', 'diagram', 'cxnSp', 'grpSp', 'prstGeom', 'custGeom',
+                   'anchor', 'pict', 'oMath', 'oMathPara', 'graphicData',
+                   'shape', 'group', 'line', 'rect', 'object', 'AlternateContent', 'svgBlip'}
+    features = sorted({tag(n) for n in root.iter()} & visual_tags)
+    walk(root)
     flush()
+    if features:
+        result.append({'kind': 'image', 'text': '', 'part': part,
+                       'locator': locator + '; full visual coverage: ' + ','.join(features),
+                       'media': [], 'visual_features': features, 'render_required': True})
     return result or [{'kind': 'text', 'text': '', 'part': part,
                        'locator': locator + '; empty', 'media': []}]
 
@@ -274,6 +286,17 @@ class Reader:
                                 if kind.endswith('/notesSlide'):
                                     self.mixed_units.extend(mixed_part(self.z, target,
                                         f'slide {number}; notes; {target}', args.max_chars))
+                    expanded = []
+                    renders = getattr(args, 'office_renders', {}) or {}
+                    for item in self.mixed_units:
+                        pages = renders.get(source['id'], {}).get(item['part'])
+                        if item.get('render_required') and isinstance(pages, list) and pages:
+                            for page_number, page_path in enumerate(pages, 1):
+                                expanded.append(dict(item, render_path=page_path,
+                                    locator=item['locator'] + f'; rendered page {page_number}'))
+                        else:
+                            expanded.append(item)
+                    self.mixed_units = expanded
                     self.total = len(self.mixed_units)
                 else:
                     self.total = len(self.parts)
@@ -354,10 +377,23 @@ class Reader:
                 text = item['text']
                 unit['original_images'] = media(self.z, item['media'], self.folder / 'media', self.course)
                 unit['visual_review_required'] = item['kind'] == 'image'
+                if item.get('render_required'):
+                    unit['visual_features'] = item['visual_features']
+                    unit['render_required'] = True
+                    renders = getattr(self.args, 'office_renders', {}) or {}
+                    render = item.get('render_path') or renders.get(self.source['id'], {}).get(item['part'])
+                    if not render:
+                        unit['unresolved_media'] = True
+                        raise ValueError('原生图表/图形需完整页面视觉覆盖：导出该页 PNG，用 --office-renders 注册来源/part 映射；或将文档导出 PDF 后重新盘点。禁止仅用文字代替。')
+                    from _common import inside
+                    render_paths = render if isinstance(render, list) else [render]
+                    unit['original_images'] = [rel(self.course, inside(self.course, r)) for r in render_paths]
+                    unit['images'] = normalize_embedded_images(unit['original_images'], self.course)
+                    unit['render_evidence'] = render
                 if item.get('unresolved_media'):
                     unit['unresolved_media'] = True
                     raise ValueError('文档内图片关系缺失或为外部链接，需要归档该图片后重试')
-                if item['kind'] == 'image':
+                if item['kind'] == 'image' and not item.get('render_required'):
                     unit['unresolved_media'] = True
                     unit['images'] = normalize_embedded_images(unit['original_images'], self.course)
                     unit.pop('unresolved_media', None)
@@ -429,9 +465,21 @@ class Reader:
             unit['status'] = 'blocked'
             unit['warnings'].append(f'{type(exc).__name__}: {exc}')
         unit['assets'] = list(unit['images'] if unit['kind'] in {'page', 'image'} else unit['chunks'])
+        safe_text = (unit['kind'] == 'text' and bool(text.strip())
+                     and not any(unit.get(k) for k in ('visual_review_required', 'unresolved_media', 'mixed_order_unknown'))
+                     and self.fmt in {'txt', 'md', 'markdown', 'csv', 'docx', 'pptx'})
+        unit['processing_route'] = ('blocked' if unit['status'] == 'blocked' or unit.get('unresolved_media')
+                                    or (unit.get('visual_review_required') and not unit['images'])
+                                    else 'deterministic_text' if safe_text else 'vision' if unit['images'] else 'blocked')
+        if unit['processing_route'] == 'blocked' and not unit['warnings']:
+            unit['warnings'].append('无法确定可靠文本或完整视觉路径，请提供可读的完整转换版本')
+        unit['complexity_hints'] = [k for k in ('mixed_order_unknown', 'render_required') if unit.get(k)]
+        if any('页面过大' in w for w in unit['warnings']):
+            unit['complexity_hints'].append('large_page_downscaled')
         return unit
 
 
+@validation_run
 def extract(course: Path, sid: str, args) -> dict:
     course = course.resolve()
     source = next((s for s in source_index(course)['sources'] if s['id'] == sid), None)
@@ -441,25 +489,45 @@ def extract(course: Path, sid: str, args) -> dict:
         raise ValueError('Source changed since inventory; inventory the complete input set again')
     folder = extraction_path(course, source)
     map_file = folder / '定位映射.json'
+    from importlib.metadata import version, PackageNotFoundError
+    try:
+        renderer = version('pypdfium2')
+    except PackageNotFoundError:
+        renderer = 'unavailable'
+    renders = getattr(args, 'office_renders', {}) or {}
+    from _common import inside
+    config = {'max_chars': args.max_chars, 'scale': args.scale,
+              'extractor_version': EXTRACTOR_VERSION, 'layout_version': LAYOUT_VERSION,
+              'pixel_limit': 12_000_000, 'renderer_version': renderer,
+              'office_renders': renders.get(sid, {}),
+              'render_hashes': {r: sha256(inside(course, r)) for paths in renders.get(sid, {}).values() for r in (paths if isinstance(paths, list) else [paths])}}
+    state = read_json(map_file) if map_file.exists() else None
+    if state and state.get('layout_version') != LAYOUT_VERSION:
+        backup = map_file.with_name('定位映射.legacy-' + sha256(map_file)[:12] + '.json')
+        if not backup.exists():
+            atomic_text(backup, map_file.read_text(encoding='utf-8'))
+        state = None
+    if state and (state.get('config') != config or state.get('source_hash') != source['sha256']):
+        state = None
+    if state and (len(state['units']) != state['total_units']
+                  or [u['ordinal'] for u in state['units']] != list(range(1, state['total_units'] + 1))):
+        state = None
+    def cached(unit):
+        assets = unit.get('artifact_hashes', {})
+        return (unit.get('status') not in {'pending', 'blocked'} and bool(assets)
+                and all(inside(course, a).is_file() and sha256(inside(course, a)) == h for a, h in assets.items()))
+    if state and all(cached(u) for u in state['units']):
+        visual_input = source['format'] in {'pdf', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'gif'}
+        end = min(args.end if args.end is not None else args.start + (0 if visual_input else 7), state['total_units'])
+        if args.start < 1 or args.start > state['total_units'] or end < args.start:
+            raise ValueError('Invalid cached extraction range')
+        return {'source': sid, 'total_units': state['total_units'], 'processed': [],
+                'reused': end - args.start + 1,
+                'next_start': end + 1 if end < state['total_units'] else None, 'map': str(map_file)}
     reader = Reader(source, folder, course, args)
     try:
-        config = {'max_chars': args.max_chars}
-        state = None
-        if map_file.exists():
-            state = read_json(map_file)
-            if source['format'] in {'docx', 'pptx'} and state.get('layout_version') != LAYOUT_VERSION:
-                backup = map_file.with_name('定位映射.legacy-' + sha256(map_file)[:12] + '.json')
-                if not backup.exists():
-                    atomic_text(backup, map_file.read_text(encoding='utf-8'))
-                state = None
-        if state is not None:
-            if state.get('config') != config:
-                raise ValueError('Extraction configuration/unit count changed; keep max-chars unchanged or use a new course')
-            if state['total_units'] != reader.total:
-                if state['units'] and all(u['status'] == 'blocked' for u in state['units']):
-                    state = None  # A formerly unavailable parser is now usable.
-                else:
-                    raise ValueError('Unit count changed after successful extraction; inspect the source and parser before continuing')
+        if state and state['total_units'] != reader.total:
+            state = None
         if state is None:
             state = {'schema_version': 1, 'layout_version': LAYOUT_VERSION, 'source_id': sid, 'source_hash': source['sha256'],
                      'config': config, 'total_units': reader.total,
@@ -471,11 +539,17 @@ def extract(course: Path, sid: str, args) -> dict:
                                for i in range(1, reader.total + 1)]}
         visual_input = source['format'] in {'pdf', 'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'gif'}
         end = min(args.end if args.end is not None else args.start + (0 if visual_input else 7), reader.total)
-        if args.start > reader.total or end < args.start:
+        if args.start < 1 or args.start > reader.total or end < args.start:
             raise ValueError(f'Invalid range; source has {reader.total} units')
         outcomes = []
         for ordinal in range(args.start, end + 1):
+            existing = state['units'][ordinal - 1]
+            if cached(existing):
+                continue
             unit = reader.read(ordinal)
+            artifacts = list(dict.fromkeys(unit['chunks'] + unit['images'] + ([unit['raw']] if unit.get('raw') else [])))
+            unit['artifact_hashes'] = {a: sha256(inside(course, a)) for a in artifacts}
+            unit['input_key'] = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
             state['units'][ordinal - 1] = unit
             outcomes.append({'unit': unit['id'], 'status': unit['status']})
             write_json(map_file, state)
