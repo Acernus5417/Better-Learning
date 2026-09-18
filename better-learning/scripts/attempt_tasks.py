@@ -49,7 +49,7 @@ def attempt_by_id(data, aid):
 
 
 @validation_run
-def reserve(course, sid, bid, host, model):
+def reserve(course, sid, bid, host, model, batch_no=None):
     from convert_materials import load, find, batch_units, valid_unit, asset_hashes, HOSTS, now, save, TERMINAL, RETRYABLE
     from capability_probe import require
     data = load(course)
@@ -87,6 +87,7 @@ def reserve(course, sid, bid, host, model):
     member = batch['member'] + '_' + aid[-8:]
     folder = f'_工作区/转写尝试/{aid}'
     attempt = {'id': aid, 'source_id': sid, 'batch_id': bid, 'logical_member': member,
+               'dispatch_batch_no': batch_no,
                'host': host, 'model': model, 'host_agent_id': None, 'state': 'reserved',
                'reserved_at': now(), 'started_at': None, 'finished_at': None,
                'unit_ids': [u['id'] for u in selected], 'staging_dir': folder,
@@ -158,7 +159,7 @@ def release(data, attempt):
 
 
 @validation_run
-def fail_attempt(course, aid, kind, stopped_agent_id=None, message='', refill=False):
+def fail_attempt(course, aid, kind, stopped_agent_id=None, message=''):
     from convert_materials import load_ledger, find, save, now
     kinds = {'SPAWN_FAILURE', 'TEMP_TOOL_FAILURE', 'WRITE_FAILURE', 'VISION_UNAVAILABLE',
              'UNREADABLE_CONTENT', 'INVALID_OUTPUT', 'ASSET_CHANGED', 'USER_REVIEW_REQUIRED', 'TIMED_OUT'}
@@ -181,10 +182,8 @@ def fail_attempt(course, aid, kind, stopped_agent_id=None, message='', refill=Fa
     attempt.update(state='failed', failure_kind=kind, failure_message=message, finished_at=now())
     release(data, attempt)
     save(course, data, render=True)
-    result = {'attempt': aid, 'state': 'failed', 'failure_kind': kind}
-    if refill:
-        result.update(refill_result(course, attempt))
-    return result
+    return {'attempt': aid, 'state': 'failed', 'failure_kind': kind,
+            'next': '本批其余成员确认停止并收集后，再 pump 下一批'}
 
 
 def classify(unit, kind, data, message=''):
@@ -207,7 +206,7 @@ def block_vision(course):
 
 
 @validation_run
-def collect_attempt(course, sid=None, bid=None, aid=None, stopped_agent_id=None, refill=False):
+def collect_attempt(course, sid=None, bid=None, aid=None, stopped_agent_id=None):
     from convert_materials import load_ledger, validate_sources, find, save, asset_hashes, assess, now
     data = load_ledger(course)
     if aid is None:
@@ -302,18 +301,22 @@ def collect_attempt(course, sid=None, bid=None, aid=None, stopped_agent_id=None,
                    failure_kind=failed[0]['failure_kind'] if failed else None)
     release(data, attempt)
     save(course, data, render=bool(failed))
-    output = {'attempt': aid, 'state': attempt['state'], 'results': results,
-              'capability_blocked': any(r['failure_kind'] == 'VISION_UNAVAILABLE' for r in results)}
-    if refill:
-        output.update(refill_result(course, attempt))
-    return output
+    return {'attempt': aid, 'state': attempt['state'], 'results': results,
+            'capability_blocked': any(r['failure_kind'] == 'VISION_UNAVAILABLE' for r in results)}
 
 
 @validation_run
 def pump(course, host, model, max_fill=None, host_limit=None):
+    """Reserve one whole dispatch batch.
+
+    Batches are serialized: while any attempt of the current batch is still
+    reserved/running/produced, no new ticket is issued. Slot refill on
+    completion is intentionally absent — the orchestrator collects the whole
+    batch first and only then pumps the next one.
+    """
     from convert_materials import load, save, batch_units
     from capability_probe import require
-    from agent_pool import available_slots, priority_key
+    from agent_pool import active_attempts, available_slots, priority_key
     data = load(course)
     if host_limit is not None:
         if not 1 <= host_limit <= 8:
@@ -322,11 +325,19 @@ def pump(course, host, model, max_fill=None, host_limit=None):
         save(course, data)
     if max_fill is not None and max_fill < 0:
         raise ValueError('max-fill cannot be negative')
+    in_flight = active_attempts(data)
+    if in_flight:
+        return {'tickets': [], 'blocked': None, 'batch_open': True,
+                'batch_no': data.get('current_batch_no', 0),
+                'active': [a['id'] for a in in_flight],
+                'hint': '本批仍有 %d 个未收集的成员；逐个确认宿主停止并 collect，'
+                        '全部结束后再 pump 下一批。批内不补位。' % len(in_flight)}
     tickets = []
     blocked = None
     limit = available_slots(data, host)
     if max_fill is not None:
         limit = min(limit, max_fill)
+    batch_no = data.get('current_batch_no', 0) + 1
     for _ in range(limit):
         data = load(course)
         ready = []
@@ -342,16 +353,14 @@ def pump(course, host, model, max_fill=None, host_limit=None):
         try:
             require(data, course, host, model)
             _, sid, bid = min(ready)
-            tickets.append(reserve(course, sid, bid, host, model))
+            ticket = reserve(course, sid, bid, host, model, batch_no)
+            ticket['batch_no'] = batch_no
+            tickets.append(ticket)
         except (OSError, ValueError, KeyError) as exc:
             blocked = str(exc)
             break
-    return {'tickets': tickets, 'blocked': blocked}
-
-
-def refill_result(course, attempt):
-    try:
-        result = pump(course, attempt['host'], attempt['model'])
-        return {'refill': result['tickets'], 'refill_blocked': result['blocked']}
-    except (OSError, ValueError, KeyError) as exc:
-        return {'refill': [], 'refill_blocked': str(exc)}
+    if tickets:
+        data = load(course)
+        data['current_batch_no'] = batch_no
+        save(course, data)
+    return {'tickets': tickets, 'blocked': blocked, 'batch_open': False, 'batch_no': batch_no if tickets else data.get('current_batch_no', 0)}

@@ -44,6 +44,6 @@
 
 ## 全局收口与快照
 
-仅主代理在所有 lesson collect 完成且有效后执行，不派卡片子 Agent，讲义成员不分配最终卡片 ID。主代理逐章抽取精简候选，写 `_工作区/核心候选.jsonl`，按知识 ID、定义/公式关系与 concept_key 统一消除同义重复。不要宣称写文件后能清空主对话；按需读取片段，避免重读所有讲义。
+仅主代理在所有 lesson `commit` 完成且 `lesson_tasks.py check` 有效后执行，不派卡片子 Agent，讲义写作阶段不分配最终卡片 ID。主代理逐章抽取精简候选，写 `_工作区/核心候选.jsonl`，按知识 ID、定义/公式关系与 concept_key 统一消除同义重复。不要宣称写文件后能清空主对话；按需读取片段，避免重读所有讲义。
 
-core_cards.py prepare 只对主代理确认的归一键分组，不能自动证明语义相同。它分配稳定 KP ID、回写知识索引与双链；主代理按照计划一次形成核心知识点.md，运行 finalize 保存所有已完成讲义、知识索引与卡片哈希。任何讲义或知识改变时卡片 stale，重新统一整理，不能继续按旧卡片验收。每张卡必须含来源知识和各关联讲义的 canonical WikiLink。完整命令见 [讲义流水线](lesson-pipeline.md)。
+core_cards.py prepare 只对主代理确认的归一键分组，不能自动证明语义相同。它分配稳定 KP ID、回写知识索引与双链；主代理按照计划与 `assets/templates/core-card.md` 一次形成核心知识点.md，链接（边界、锚点、关系区）始终由脚本渲染：写完卡片先运行 `obsidian_links.py rebuild` 把关系区重渲到全部文档，再运行 `core_cards.py finalize` 保存所有已完成讲义、知识索引与卡片哈希，最后 `core_cards.py check` 与 `validate_package.py --mode final`。任何讲义或知识改变时卡片 stale，重新统一整理，不能继续按旧卡片验收。每张卡必须含来源知识和各关联讲义的 canonical WikiLink。完整命令见 [讲义流水线](lesson-pipeline.md)。

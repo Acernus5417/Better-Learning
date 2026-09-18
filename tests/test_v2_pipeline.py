@@ -55,8 +55,8 @@ class V2Tests(unittest.TestCase):
         self.visual(10)
         job = tasks.pump(self.course, 'codex', 'fixture', max_fill=1)['tickets'][0]
         a = self.produce(job, status='uncertain')
-        result = cm.collect(self.course, attempt_id=a['id'], stopped_agent_id=job['member'], refill=True)
-        retry = result['refill'][0]
+        cm.collect(self.course, attempt_id=a['id'], stopped_agent_id=job['member'])
+        retry = tasks.pump(self.course, 'codex', 'fixture')['tickets'][0]
         self.assertEqual(retry['profile'], 'strict')
         attempt = next(x for x in cm.load(self.course)['attempts'] if x['id'] == retry['attempt'])
         self.assertEqual(attempt['parent_attempt_id'], a['id'])
@@ -67,24 +67,36 @@ class V2Tests(unittest.TestCase):
     def test_infrastructure_retry_stays_bounded(self):
         self.visual(5)
         job = tasks.pump(self.course, 'codex', 'fixture')['tickets'][0]
-        result = tasks.fail_attempt(self.course, job['attempt'], 'SPAWN_FAILURE', refill=True)
-        self.assertEqual(result['refill'][0]['profile'], 'bounded')
+        tasks.fail_attempt(self.course, job['attempt'], 'SPAWN_FAILURE')
+        retry = tasks.pump(self.course, 'codex', 'fixture')['tickets'][0]
+        self.assertEqual(retry['profile'], 'bounded')
 
-    def test_completion_refills_only_free_slot(self):
+    def test_next_batch_waits_for_current_batch(self):
+        """No slot refill: the next pump is refused until the whole batch is collected."""
         self.visual(25)
         jobs = tasks.pump(self.course, 'codex', 'fixture')['tickets']
         self.assertEqual(len(jobs), 4)
+        blocked = tasks.pump(self.course, 'codex', 'fixture')
+        self.assertFalse(blocked['tickets'])
+        self.assertTrue(blocked['batch_open'])
         self.produce(jobs[0])
-        result = cm.collect(self.course, attempt_id=jobs[0]['attempt'], stopped_agent_id=jobs[0]['member'], refill=True)
-        self.assertEqual(len(result['refill']), 1)
-        self.assertEqual(cm.summarize(cm.load(self.course))['active_count'], 4)
+        result = cm.collect(self.course, attempt_id=jobs[0]['attempt'], stopped_agent_id=jobs[0]['member'])
+        self.assertNotIn('refill', result)
+        self.assertEqual(cm.summarize(cm.load(self.course))['active_count'], 3)
+        self.assertTrue(tasks.pump(self.course, 'codex', 'fixture')['batch_open'])
+        for job in jobs[1:]:
+            a = self.produce(job)
+            cm.collect(self.course, attempt_id=a['id'], stopped_agent_id=job['member'])
+        nxt = tasks.pump(self.course, 'codex', 'fixture')
+        self.assertFalse(nxt['batch_open'])
+        self.assertTrue(nxt['tickets'])
 
-    def test_capability_block_never_refills(self):
+    def test_capability_block_stops_new_batches(self):
         self.visual(10)
         job = tasks.pump(self.course, 'codex', 'fixture', max_fill=1)['tickets'][0]
         self.produce(job, 'vision_unavailable')
-        result = cm.collect(self.course, attempt_id=job['attempt'], stopped_agent_id=job['member'], refill=True)
-        self.assertFalse(result['refill'])
+        result = cm.collect(self.course, attempt_id=job['attempt'], stopped_agent_id=job['member'])
+        self.assertTrue(result['capability_blocked'])
         self.assertFalse(tasks.pump(self.course, 'codex', 'fixture')['tickets'])
 
     def test_body_sentinel_is_not_control_status(self):
@@ -107,7 +119,19 @@ class V2Tests(unittest.TestCase):
         source = self.root / 'book.txt'; source.write_text('A concept.', encoding='utf-8')
         inventory(self.course, [source]); cm.prepare(self.course); cm.assemble(self.course)
         atomic_text(self.course / '学习需求.md', '# 学习需求\n基础学习')
-        atomic_text(self.course / '学习路径.md', '# 学习路径\n按序学习')
+        steps = '\n'.join(
+            f'<!-- BL-STEP:BEGIN P-MAIN-S{i:03d} -->\n\n## 第{i}阶段\n\nP-MAIN-S{i:03d} ^P-MAIN-S{i:03d}\n\n'
+            f'目标：掌握概念{i}\n\n<!-- BL-STEP:END P-MAIN-S{i:03d} -->\n' for i in range(1, n + 1))
+        atomic_text(self.course / '学习路径.md',
+                    '<!-- BL-PATH:BEGIN P-MAIN -->\n\n# 学习路径\n\nP-MAIN ^P-MAIN\n\n按序学习\n\n'
+                    + steps + '\n<!-- BL-PATH:END P-MAIN -->\n')
+        write_json(self.course / '_工作区/路径索引.json',
+                   {'path_id': 'P-MAIN', 'title': '完整路线',
+                    'steps': [{'id': f'P-MAIN-S{i:03d}', 'title': f'第{i}阶段', 'order': i,
+                               'lessons': [f'L-{i:02d}']} for i in range(1, n + 1)]})
+        atomic_text(self.course / '开始学习.md',
+                    '<!-- BL-START:BEGIN START -->\n\n# 开始学习\n\nSTART ^START\n\n先看路线。\n\n'
+                    '<!-- BL-START:END START -->\n')
         chapter = '_工作区/章节知识/KC-01.md'
         items = [{'id': f'K-{i:02d}', 'title': f'概念{i}', 'chapter_id': 'KC-01', 'anchor': f'K-{i:02d}',
                   'status': 'verified', 'kind': 'material', 'source_refs': [{'source_id':'SRC-001','unit_id':'U00001'}],
@@ -115,67 +139,91 @@ class V2Tests(unittest.TestCase):
         definitions = [{'id': f'L-{i:02d}', 'title': f'章节{i}', 'order': i, 'path': f'学习文档/{i:02d}-章节.md',
                         'path_excerpt': f'第{i}章目标', 'status': 'pending'} for i in range(1,n+1)]
         write_json(self.course / '_工作区/章节索引.json', {'chapters':[{'id':'KC-01','title':'知识','order':1,'status':'complete','path':chapter}], 'lessons': definitions})
-        atomic_text(self.course / chapter, '\n'.join(f'## 概念{i}\n\n概念内容{i}\n^K-{i:02d}\n' for i in range(1,n+1)))
+        atomic_text(self.course / chapter, '\n'.join(
+            f'<!-- BL-K:BEGIN K-{i:02d} -->\n\n## 概念{i}\n\nK-{i:02d} ^K-{i:02d}\n\n概念内容{i}\n\n'
+            f'<!-- BL-K:END K-{i:02d} -->\n' for i in range(1, n+1)))
         atomic_text(self.course / '_工作区/知识索引.jsonl', ''.join(json.dumps(k,ensure_ascii=False)+'\n' for k in items))
         links.build_map(self.course)
         atomic_text(self.course / '知识内容.md', build_content(self.course))
         lessons.prepare(self.course)
 
-    def write_lesson(self, job, extra=''):
-        data = read_json(self.course / lessons.LEDGER); a, lesson = lessons.find(data, job['attempt'])
-        manifest = read_json(self.course / a['task_manifest'])
-        lessons.mark_running(self.course, a['id'], job['member'])
-        body = f'---\ntype: lesson\nid: {lesson["id"]}\ntitle: 测试\norder: {lesson["order"]}\nstatus: complete\n---\n# 讲义\n'
-        for kid in lesson['knowledge_ids']:
-            body += '\n教学解释\n' + manifest['links']['knowledge'][kid] + '\n^' + kid + '\n'
-        if a.get('write_mode') == 'parts-v1':
-            for section in a['sections']:
-                if section['kind'] == 'intro': content = body.split('# 讲义')[0] + '# 讲义\n'
-                elif section['kind'] == 'closing': content = '## 章末\n测试复习与来源' + extra
-                else:
-                    content = '\n'.join('教学解释\n' + manifest['links']['knowledge'][kid] + '\n^' + kid for kid in section['knowledge_ids'])
-                atomic_text(self.course / section['directory'] / '001.md', content)
-                write_json(self.course / section['receipt'], {'schema_version': 1, 'section_id': section['id'], 'status': 'complete', 'files': ['001.md']})
-        else:
-            atomic_text(self.course / a['output'], body + extra)
-        write_json(self.course / a['result'], {'status':'complete','lesson_id':lesson['id'],'knowledge_ids':lesson['knowledge_ids']})
+    def lesson_row(self, lesson_id):
+        data = read_json(self.course / lessons.LEDGER)
+        return next(l for l in data['lessons'] if l['id'] == lesson_id)
+
+    def write_lesson(self, lesson_id, extra=''):
+        """Main-agent equivalent: write every section chunk and the result receipt."""
+        row = self.lesson_row(lesson_id)
+        manifest = read_json(self.course / row['manifest'])
+        body = (f'---\ntype: lesson\nid: {row["id"]}\ntitle: 测试\norder: {row["order"]}\n'
+                'status: complete\n---\n# 讲义\n')
+        for section in row['sections']:
+            if section['kind'] == 'intro':
+                content = body.split('# 讲义')[0] + '# 讲义\n'
+            elif section['kind'] == 'closing':
+                content = '## 章末\n测试复习与来源' + extra
+            else:
+                content = '\n'.join('## 小节\n\n教学解释\n' + manifest['links']['knowledge'][kid]
+                                    for kid in section['knowledge_ids'])
+            atomic_text(self.course / section['directory'] / '001.md', content)
+            write_json(self.course / section['receipt'], {'schema_version': 1, 'section_id': section['id'],
+                                                          'status': 'complete', 'files': ['001.md']})
+        write_json(self.course / row['result'], {'status': 'complete', 'lesson_id': row['id'],
+                                                 'knowledge_ids': row['knowledge_ids']})
+        return row
 
     def finish_lessons(self):
-        queue = lessons.pump(self.course, 'codex', 'fixture')['tickets']
-        while queue:
-            job = queue.pop(0); self.write_lesson(job)
-            result = lessons.collect(self.course, job['attempt'], job['member'])
+        data = read_json(self.course / lessons.LEDGER)
+        for row in data['lessons']:
+            if row['status'] == 'done': continue
+            self.write_lesson(row['id'])
+            result = lessons.commit(self.course, row['id'])
             self.assertIsNone(result['failure_kind'], result)
-            queue.extend(result['refill'])
 
     def finish_cards(self, n):
         atomic_text(self.course / '_工作区/核心候选.jsonl', '\n'.join(json.dumps({'concept_key':'shared','knowledge_ids':[f'K-{i:02d}'],'reason':'核心'}) for i in range(1,n+1)))
         cards.prepare(self.course)
         entry = read_json(self.course / '_工作区/核心卡片计划.json')['cards'][0]
-        atomic_text(self.course / '核心知识点.md', '# 核心知识点\n\n' + '\n'.join(entry['links']) + '\n^' + entry['card_id'] + '\n')
+        literals = list(entry['links']['knowledge'].values()) + list(entry['links']['exercises'].values())
+        atomic_text(self.course / '核心知识点.md', self.card_document(entry, literals))
         cards.finalize(self.course)
+        # Cards are active once finalized: re-render the course in the working phase.
+        links.sync_course_relations(self.course, phase='working')
 
-    def test_lessons_concurrent_refill(self):
+    def card_document(self, entry, literals):
+        return ('# 核心知识点\n\n'
+                + '<!-- BL-INDEX:BEGIN IDX-CORE -->\n\n## 核心复习目录\n\nIDX-CORE ^IDX-CORE\n\n'
+                + '按知识卡片复习。\n\n<!-- BL-INDEX:END IDX-CORE -->\n\n'
+                + f'<!-- BL-KP:BEGIN {entry["card_id"]} -->\n\n## 核心卡片\n\n'
+                + f'{entry["card_id"]} ^{entry["card_id"]}\n\n统一定义\n'
+                + '\n'.join(literals) + '\n\n'
+                + f'<!-- BL-KP:END {entry["card_id"]} -->\n')
+
+    def test_lessons_are_committed_one_by_one(self):
+        """No chapter sub-agents: the main agent writes and commits each lesson."""
         self.knowledge()
-        jobs = lessons.pump(self.course, 'codex', 'fixture')['tickets']
-        self.assertEqual(len(jobs), 4)
-        self.write_lesson(jobs[0])
-        result = lessons.collect(self.course, jobs[0]['attempt'], jobs[0]['member'])
-        self.assertEqual(len(result['refill']), 1)
-        self.assertEqual(len(read_json(self.course / lessons.LEDGER)['attempts']), 5)
+        data = read_json(self.course / lessons.LEDGER)
+        self.assertEqual(len([l for l in data['lessons'] if l['status'] != 'done']), 8)
+        self.write_lesson('L-01')
+        first = lessons.commit(self.course, 'L-01')
+        self.assertIsNone(first['failure_kind'], first)
+        self.assertEqual(self.lesson_row('L-01')['status'], 'done')
+        self.assertEqual(self.lesson_row('L-02')['status'], 'pending')
+        self.assertEqual(len(read_json(self.course / lessons.LEDGER)['commits']), 1)
 
     def test_lesson_input_change_rejected(self):
-        self.knowledge(1); job = lessons.pump(self.course,'codex','fixture')['tickets'][0]; self.write_lesson(job)
+        self.knowledge(1); self.write_lesson('L-01')
         atomic_text(self.course / '学习需求.md', 'new requirements')
-        result = lessons.collect(self.course,job['attempt'],job['member'])
+        result = lessons.commit(self.course, 'L-01')
         self.assertEqual(result['failure_kind'],'STALE_INPUT')
-        self.assertFalse(result['refill'])
 
     def test_unknown_lesson_link_rejected(self):
-        self.knowledge(1); job=lessons.pump(self.course,'codex','fixture')['tickets'][0]
-        self.write_lesson(job, '\n[[矩阵]]\n')
-        result=lessons.collect(self.course,job['attempt'],job['member'],refill=False)
-        self.assertEqual(result['failure_kind'],'INVALID_LINK_TARGET')
+        self.knowledge(1); self.write_lesson('L-01', '\n[[矩阵]]\n')
+        result = lessons.commit(self.course, 'L-01')
+        self.assertIsNotNone(result['failure_kind'])
+        self.assertIn('BLOCK_REQUIRED', result.get('error', ''))
+        self.assertEqual(self.lesson_row('L-01')['status'], 'failed')
+        self.assertFalse((self.course / '学习文档/01-章节.md').exists())
 
     def test_cards_wait_for_lessons_and_global_dedup(self):
         self.knowledge(2)
@@ -186,7 +234,8 @@ class V2Tests(unittest.TestCase):
         self.assertFalse(lessons.check(self.course))  # Graph enrichment must not stale teaching content.
         plan=read_json(self.course / '_工作区/核心卡片计划.json')['cards']
         entry=plan[0]
-        atomic_text(self.course / '核心知识点.md','# 核心知识点\n\n统一定义\n'+'\n'.join(entry['links'])+'\n^'+entry['card_id']+'\n')
+        literals = list(entry['links']['knowledge'].values()) + list(entry['links']['exercises'].values())
+        atomic_text(self.course / '核心知识点.md', self.card_document(entry, literals))
         self.assertTrue(cards.finalize(self.course)['complete'])
         self.assertFalse(cards.check(self.course))
         self.assertFalse(links.validate_obsidian_links(self.course))
@@ -203,19 +252,28 @@ class V2Tests(unittest.TestCase):
         self.assertIn('`[[忽略]]`',moved)
 
     def test_link_missing_duplicate_and_source_literal(self):
-        self.course.mkdir(); links.initialize(self.course)
-        atomic_text(self.course/'知识内容.md','text\n^K-01\n')
+        self.knowledge(1); self.finish_lessons()
+        # Missing/duplicate blocks are detected by the document-level check.
         self.assertTrue(links.validate_document(self.course,'[[知识内容#^K-missing]]'))
         self.assertTrue(links.validate_document(self.course,'text\n^K-01\n\ntext\n^K-01\n'))
+        # A bare literal inside a source payload is not absorbed into system links.
         atomic_text(self.course/'资料转写/source.md','text [[foo]]')
         self.assertFalse(links.validate_obsidian_links(self.course,relationships=False))
 
     def test_rename_preserves_id_and_rewrites_links(self):
         self.knowledge(1); self.finish_lessons()
-        atomic_text(self.course/'开始学习.md','[[学习文档/01-章节#^K-01]]')
+        # START out-edges only exist when registered in 开始入口.json.
+        write_json(self.course / '_工作区/开始入口.json',
+                   {'entries': [{'target_id': 'P-MAIN', 'subtype': 'entry'},
+                                {'target_id': 'L-01', 'subtype': 'entry'},
+                                {'target_id': 'IDX-CORE', 'subtype': 'entry'}],
+                    'management': [], 'index_entry': True})
+        atomic_text(self.course/'开始学习.md',
+                    '<!-- BL-START:BEGIN START -->\n\n# 开始学习\n\nSTART ^START\n\n'
+                    '先看 [[学习文档/01-章节#^L-01]]。\n\n<!-- BL-START:END START -->\n')
         result=links.rename_lesson(self.course,'L-01','学习文档/01-新名.md')
         self.assertEqual(result['lesson_id'],'L-01')
-        self.assertIn('[[学习文档/01-新名#^K-01]]',(self.course/'开始学习.md').read_text('utf-8'))
+        self.assertIn('[[学习文档/01-新名#^L-01]]',(self.course/'开始学习.md').read_text('utf-8'))
         self.assertFalse(lessons.check(self.course))
 
     def test_package_rewrites_graph_and_preserves_receipts(self):
@@ -233,11 +291,12 @@ class V2Tests(unittest.TestCase):
         self.assertTrue(report['passed'],report['errors'])
         cm.package(self.course)
         self.assertTrue((self.course/'课程文档/知识内容.md').exists())
-        self.assertIn('[[课程文档/知识内容#^K-01]]',(self.course/'学习文档/01-章节.md').read_text('utf-8'))
+        self.assertIn('[[课程文档/知识内容#^K-01|概念1]]',(self.course/'学习文档/01-章节.md').read_text('utf-8'))
         self.assertFalse(links.validate_obsidian_links(self.course))
         self.assertFalse(lessons.check(self.course))
         self.assertFalse(cards.check(self.course))
         self.assertFalse((self.course/'_工作区/讲义尝试').exists())
+        self.assertFalse((self.course/'_工作区/讲义输入').exists())
 
     def test_strict_cost_and_mechanical_complexity_are_local(self):
         self.visual(12)
@@ -248,12 +307,11 @@ class V2Tests(unittest.TestCase):
         self.assertIn('COST_THRESHOLD',tasks.derive_strict_reasons({}, {}, 12000,12000))
         self.assertFalse(tasks.derive_strict_reasons({}, {'failure_kind':'TIMED_OUT'},100,12000))
 
-    def test_source_change_stops_refill(self):
+    def test_source_change_stops_new_batches(self):
         self.visual(10); job=tasks.pump(self.course,'codex','fixture',max_fill=1)['tickets'][0]
         self.produce(job)
         with (self.root/'scan.pdf').open('ab') as f: f.write(b'change')
-        result=cm.collect(self.course,attempt_id=job['attempt'],stopped_agent_id=job['member'],refill=True)
-        self.assertFalse(result['refill'])
+        result=cm.collect(self.course,attempt_id=job['attempt'],stopped_agent_id=job['member'])
         self.assertTrue(all(r['failure_kind']=='ASSET_CHANGED' for r in result['results']))
 
     def test_prerequisite_context_and_links_are_assigned(self):
@@ -263,34 +321,33 @@ class V2Tests(unittest.TestCase):
         rows[1]['prerequisites'] = ['K-01']
         atomic_text(path, ''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in rows))
         lessons.prepare(self.course)
-        jobs = lessons.pump(self.course, 'codex', 'fixture')['tickets']
-        data = read_json(self.course / lessons.LEDGER)
-        attempt, _ = lessons.find(data, jobs[1]['attempt'])
-        manifest = read_json(self.course / attempt['task_manifest'])
+        row = self.lesson_row('L-02')
+        manifest = read_json(self.course / row['manifest'])
         self.assertIn('概念内容1', Path(manifest['inputs']['prerequisites']).read_text('utf-8'))
-        self.assertEqual(manifest['links']['prerequisites']['K-01'], '[[知识内容#^K-01]]')
-        self.assertTrue(manifest['links']['sources'])
-        self.assertTrue(manifest['links']['prerequisite_lessons'])
-        self.assertGreaterEqual(len(manifest['links']['exercises']), 24)
+        self.assertEqual(manifest['links']['prerequisites']['K-01'], '[[知识内容#^K-01|概念1]]')
+        self.assertGreaterEqual(len(manifest['reserved_exercises']), 24)
         self.assertNotIn('K-01', manifest['allowed_blocks'])
+        self.assertFalse(manifest['agent_can_write_system_regions'])
 
     def test_source_filename_special_characters_remain_linkable(self):
         source = self.root / '教材[复习]#1%20.txt'
         source.write_text('text', encoding='utf-8')
         inventory(self.course, [source]); cm.prepare(self.course); cm.assemble(self.course)
-        target = links.build_map(self.course)['sources']['SRC-001']
-        link = links.parse_wikilinks(links.render_wikilink(target, block='SRC-001-U00001'))[0]
-        self.assertTrue(links.validate_wikilink(self.course, link).exists())
+        from entity_registry import Registry
+        location = Registry(self.course).canonical('SRC-001-U00001')
+        rendered = links.render_wikilink(location.path.removesuffix('.md'), block=location.block_id)
+        self.assertEqual(len(links.parse_wikilinks(rendered)), 1)
+        self.assertFalse(links.check_physical_target(self.course, location))
+        self.assertTrue((self.course / location.path).exists())
 
     def test_frontmatter_identity_cannot_come_from_body(self):
         self.knowledge(1)
-        job = lessons.pump(self.course, 'codex', 'fixture')['tickets'][0]
-        self.write_lesson(job)
-        a, _ = lessons.find(read_json(self.course / lessons.LEDGER), job['attempt'])
-        path = self.course / a['sections'][0]['directory'] / '001.md'
+        self.write_lesson('L-01')
+        row = self.lesson_row('L-01')
+        path = self.course / row['sections'][0]['directory'] / '001.md'
         text = path.read_text('utf-8').replace('type: lesson', 'type: source').replace('id: L-01\n', '')
         atomic_text(path, text + '\nid: L-01\n')
-        result = lessons.collect(self.course, job['attempt'], job['member'], refill=False)
+        result = lessons.commit(self.course, 'L-01')
         self.assertEqual(result['failure_kind'], 'INVALID_OUTPUT')
 
     def test_cards_check_detects_changed_requirements(self):

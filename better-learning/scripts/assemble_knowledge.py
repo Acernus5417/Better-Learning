@@ -184,6 +184,13 @@ def rebuild_knowledge(course: Path, allow_partial: bool = False, ai_request: str
     return report
 
 
+REL_SPAN = re.compile(r'[ \t]*<!-- BL-REL:BEGIN[^>]*-->.*?<!-- BL-REL:END[^>]*-->\n?', re.S)
+
+
+def _teaching_text(text):
+    return REL_SPAN.sub('', text)
+
+
 @validation_run
 def require_knowledge(course: Path):
     path = course / '知识内容.md'
@@ -196,7 +203,9 @@ def require_knowledge(course: Path):
         request = auth['request']
         if sha256(inside(course, request)) != auth['sha256']:
             raise ValueError('AI补全请求记录已变化，需要重新确认范围并生成知识库')
-    if path.read_text(encoding='utf-8') != build_content(course, ai_request=request):
+    # Relation regions are a derived view: rendering them must not look like a
+    # knowledge base that no longer matches its fragments.
+    if _teaching_text(path.read_text(encoding='utf-8')) != _teaching_text(build_content(course, ai_request=request)):
         raise ValueError('知识内容.md 与当前完整分片/授权范围不一致，请先重建知识库')
     return {'ready': True, 'knowledge': str(path), 'mode': 'ai_supplement' if request else 'materials'}
 

@@ -9,6 +9,7 @@ from entity_sections import parse_sections
 from entity_registry import GRAPH_POLICY_VERSION, Registry, document as registry_document, is_v2
 from obsidian_links import block_ids, build_map, render_wikilink, validate_candidate, validate_document, validate_obsidian_links
 from relation_renderer import render_entity_link, sync_course_relations
+from templates import hash_of as template_hash
 
 STATE = '_工作区/核心卡片状态.json'
 
@@ -34,6 +35,7 @@ def inputs(course):
             'knowledge_index_hash': sha256(course / '_工作区/知识索引.jsonl'),
             'knowledge_hash': semantic_hash(course, registry_document(course, '知识内容.md')),
             'exercise_index_hash': sha256(exercise_index) if exercise_index.exists() else None,
+            'card_template': template_hash('card'), 'lesson_template': template_hash('lesson'),
             'graph_policy_version': GRAPH_POLICY_VERSION}
 
 
@@ -127,8 +129,10 @@ def prepare(course):
     rebuild_knowledge(course)
     write_json(course / STATE, {'status': 'prepared', **inputs(course), 'cards': [e['card_id'] for e in plan]})
     return {'cards': len(plan), 'plan': '_工作区/核心卡片计划.json',
-            'next': '主代理统一写核心知识点.md（只使用计划中的 canonical K/EX 字面量）；'
-                    '写完运行 core_cards.py finalize'}
+            'template': 'assets/templates/core-card.md',
+            'next': '主代理按计划与卡片模板统一写核心知识点.md（只使用计划中的 canonical K/EX 字面量）；'
+                    '写完先运行 obsidian_links.py rebuild 重渲全课程关系区，再运行 core_cards.py finalize、'
+                    'core_cards.py check 与 validate_package.py --mode final'}
 
 
 def add_relations(course, knowledge=None, mapping=None):
@@ -144,8 +148,13 @@ def finalize(course):
     if any(state.get(k) != v for k, v in inputs(course).items()):
         raise ValueError('卡片输入已变化，请重新全局整理')
     relative = cards_path(course)
-    text = inside(course, relative).read_text(encoding='utf-8')
     entity_registry = Registry(course)
+    if is_v2(course):
+        # Cards are still 'staged' here: render every callout in the staged phase,
+        # otherwise the knowledge base would lack the K→KP edges that finalize checks.
+        sync_course_relations(course, phase='staged')
+        entity_registry = Registry(course)
+    text = inside(course, relative).read_text(encoding='utf-8')
     if is_v2(course):
         index = parse_sections(text, None, strict_registry=False)
         actual = sorted(section.id for section in index.sections.values() if section.kind == 'KP')

@@ -105,7 +105,8 @@ class HostTests(unittest.TestCase):
         before = p.read_bytes()
         assemble(self.course)
         self.assertEqual(before, p.read_bytes())
-        self.assertEqual(before.count(b'<!-- BL-PAGE'), 3)
+        # v2 courses emit source shells (BL-SOURCE/BL-SRC), not legacy BL-PAGE blocks.
+        self.assertEqual(before.count(b'<!-- BL-SRC:BEGIN '), 3)
 
     def test_concurrency_and_recovery(self):
         self.setup_pages(batch=1)

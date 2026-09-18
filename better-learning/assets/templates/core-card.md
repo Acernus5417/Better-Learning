@@ -59,6 +59,7 @@
 说明：
 
 - 卡片由主代理按 `_工作区/核心卡片计划.json` 统一写入，不派卡片子 Agent、不自行分配 card_id。
+- 1–11 块必须齐全（术语对齐、前置、直观理解、正式定义、典型例子、易错反例、后续关联、自测与解析、课程位置、来源证据、掌握度快照），缺块即返工；写完运行 `core_cards.py finalize`，再运行 `obsidian_links.py rebuild` 与 `validate_package.py --mode final`。
 - 锚点必须紧接标题；不要在卡片末尾写 `^{KP-ID}`。
 - 卡片只连 **canonical K** 与 **active EX**：不连讲义、不连其他 KP、不连来源单元、不连 Path；关系区由脚本渲染，正文也不要手写这些链接。
 - 引用练习时使用计划里给出的 canonical 字面量，不猜标题或路径。

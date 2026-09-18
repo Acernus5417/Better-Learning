@@ -1,4 +1,4 @@
-"""One lesson per fresh host member, snapshot-gated commits and slot refill."""
+"""Main-agent lesson writing: per-lesson input packages and snapshot-gated commits."""
 import argparse
 import hashlib
 import json
@@ -8,14 +8,13 @@ import re
 import uuid
 
 from _common import Transaction, atomic_text, inside, read_json, read_jsonl, sha256, write_json, validation_run
-from agent_pool import active_attempts, available_slots, require_stopped
-from host_agents import HOSTS, DEFAULT_HOST
 from entity_sections import SectionError, parse_sections
 from entity_registry import GRAPH_POLICY_VERSION, Registry, is_v2, teaching_section_id
 from obsidian_links import (LEGACY_BLOCK_RELATIONS, block_ids, build_map, entity_section,
                             legacy_block_section, render_wikilink, sync_candidate,
                             validate_candidate, validate_document)
 from relation_renderer import apply_edits
+from templates import hash_of as template_hash
 
 LEDGER = '_工作区/讲义任务.json'
 INDEX = '_工作区/章节索引.json'
@@ -26,8 +25,16 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
 
+REL_SPAN = re.compile(r'[ \t]*<!-- BL-REL:BEGIN[^>]*-->.*?<!-- BL-REL:END[^>]*-->\n?', re.S)
+
+
 def semantic(text):
-    """Teaching content only: derived relation regions and identity anchors excluded."""
+    """Teaching content only: derived relation regions and identity anchors excluded.
+
+    Works on whole documents and on single knowledge fragments, so re-rendering
+    relation regions never invalidates teaching content.
+    """
+    text = REL_SPAN.sub('', text)
     if '<!-- BL-' not in text:
         return LEGACY_BLOCK_RELATIONS.sub('', text)
     try:
@@ -123,15 +130,23 @@ def snapshot(course, lesson):
     spec = {'knowledge_hash': digest(semantic(document(course, '知识内容.md').read_text(encoding='utf-8'))),
             'fragments': {k: digest(v) for k, v in slices.items()}, 'records': digest(records),
             'prerequisites': {k: digest(v) for k, v in prerequisite_slices.items()},
-            'path_hash': sha256(document(course, '学习路径.md')), 'requirements_hash': sha256(document(course, '学习需求.md')),
+            # Teaching content only: relation regions are a derived view, so their
+            # re-render (cards, Obsidian rebuild) must not invalidate a chapter.
+            'path_hash': digest(semantic(path_text)),
+            'requirements_hash': sha256(document(course, '学习需求.md')),
             'attachments': {p: sha256(inside(course, p)) for p in lesson.get('attachments', [])},
             'lesson': digest({k: lesson[k] for k in ('id', 'path', 'title', 'order', 'path_excerpt', 'exercise_count') if k in lesson}),
-            'policy': sha256(root / 'references/lesson-worker-policy.md'),
+            'policy': sha256(root / 'references/lesson-writing-policy.md'),
             'parts_protocol': sha256(root / 'scripts/lesson_parts.py'),
             'writing_spec': sha256(root / 'references/chapter-writing.md'),
-            'template': sha256(root / 'assets/templates/learning-chapter.md'),
+            'template': template_hash('lesson'),
+            'card_template': template_hash('card'),
             'graph_policy_version': GRAPH_POLICY_VERSION,
-            'registry_revision': registry.structure_revision(),
+            # Identity of the entities a chapter may link, not the whole registry:
+            # registering cards or exercises later must not stale teaching content.
+            'identity': digest({'knowledge': sorted(k['id'] for k in knowledge),
+                                'lessons': sorted([l['id'], l.get('path', '')]
+                                                  for l in index.get('lessons', []))}),
             'link_schema_version': 1 if legacy else 2}
     return {'input_hash': digest(spec), 'hashes': spec, 'slices': slices, 'knowledge': knowledge,
             'prerequisite_slices': prerequisite_slices, 'prerequisites': prerequisites,
@@ -163,6 +178,13 @@ def lesson_links(course, lesson, snap, mapping, registry_obj):
     else:
         links['learning_path'] = render_wikilink(mapping['learning_path'])
         allowed.append(mapping['learning_path'])
+    # The rendered relation region also links the path itself (L → NAV.path).
+    path_id = step.rsplit('-S', 1)[0] if step else 'P-MAIN'
+    if registry_obj.has(path_id):
+        location = registry_obj.canonical(path_id)
+        allowed.append(location.path.removesuffix('.md') + '#^' + path_id)
+    else:
+        allowed.append(mapping['learning_path'] + '#^' + path_id)
     # Reserve identifiers, not a quota: workers only use IDs needed by the chapter.
     exercises = [f'EX-{lid.replace("-", "")}-{i:03d}'
                  for i in range(1, lesson.get('exercise_count', max(24, 6 * len(lesson['knowledge_ids']) + 12)) + 1)]
@@ -308,18 +330,84 @@ def invalidate(course, reason):
         data = read_json(cards); data.update(status='stale', reason=reason); write_json(cards, data)
 
 
+def commits_of(data):
+    """Commit records; older ledgers stored them under 'attempts'."""
+    return data.get('commits', data.get('attempts', []))
+
+
+def active_records(data):
+    return [c for c in commits_of(data) if c.get('state') in {'drafting', 'running', 'produced'}]
+
+
+def build_lesson_input(course, definition, row, snap, mapping, root, previous=None):
+    """Write the per-lesson input package the main agent reads before writing."""
+    folder = row['folder']
+    lid = row['id']
+    inputs = {'requirements': f'{folder}/学习需求.md', 'path': f'{folder}/路径片段.md',
+              'knowledge': f'{folder}/知识片段.md'}
+    atomic_text(inside(course, inputs['requirements']), snap['requirements'])
+    atomic_text(inside(course, inputs['path']), snap['path_excerpt'])
+    atomic_text(inside(course, inputs['knowledge']), '\n\n'.join(snap['slices'].values()))
+    if snap['prerequisite_slices']:
+        inputs['prerequisites'] = f'{folder}/前置知识片段.md'
+        atomic_text(inside(course, inputs['prerequisites']), '\n\n'.join(snap['prerequisite_slices'].values()))
+    registry_obj = Registry(course)
+    links, allowed, exercises = lesson_links(course, row, snap, mapping, registry_obj)
+    from lesson_parts import provision
+    sections, protected, resume = provision(course, folder, row, previous)
+    if resume:
+        inputs['continuity'] = f'{folder}/续写摘要.json'
+        write_json(inside(course, inputs['continuity']), resume)
+    v2 = is_v2(course)
+    sections_meta = [dict(s, directory=str(inside(course, s['directory'])),
+                          receipt=str(inside(course, s['receipt'])),
+                          anchor_literal=(f"{s['knowledge_ids'][0]} ^{s['knowledge_ids'][0]}"
+                                          if s.get('knowledge_ids') else None),
+                          system_slots=['identity', 'relations'] if s.get('knowledge_ids') else [])
+                     for s in sections]
+    from templates import path as template_path
+    manifest = {'schema_version': 1 if not v2 else 2, 'kind': 'lesson', 'author': 'main-agent',
+                'lesson_id': lid, 'title': row['title'], 'order': row['order'],
+                'knowledge_ids': row['knowledge_ids'],
+                'graph_policy_version': GRAPH_POLICY_VERSION,
+                'registry_revision': registry_obj.structure_revision(),
+                'input_content_hash': snap['input_hash'],
+                'inputs': {k: str(inside(course, p)) for k, p in inputs.items()},
+                'policy': str(root / 'references/lesson-writing-policy.md'),
+                'writing_spec': str(root / 'references/chapter-writing.md'),
+                'template': str(template_path('lesson')),
+                'result': str(inside(course, f'{folder}/{lid}.result.json')),
+                'write_mode': 'parts-v1', 'sections': sections_meta,
+                'links': links, 'allowed_blocks': row['knowledge_ids'] + exercises,
+                'reserved_exercises': [{'id': ex, 'owner_lesson_id': lid} for ex in exercises],
+                'agent_can_write_system_regions': False}
+    manifest['link_manifest_hash'] = digest({'sections': sections_meta, 'links': links})
+    task = folder + '/task.json'
+    write_json(inside(course, task), manifest)
+    row.update(manifest=task, task_hash=sha256(inside(course, task)), sections=sections,
+               protected_chunks=protected, allowed_links=allowed,
+               allowed_blocks=manifest['allowed_blocks'],
+               link_manifest_hash=manifest['link_manifest_hash'],
+               result=f'{folder}/{lid}.result.json', output=f'{folder}/{lid}.md',
+               agent_may_write_system_regions=manifest['agent_can_write_system_regions'])
+    return row
+
+
 @validation_run
-def prepare(course, max_concurrent=4, max_attempts=3):
+def prepare(course, max_attempts=3):
+    """One input package per lesson; the main agent writes the chapter itself."""
     from assemble_knowledge import require_knowledge
     require_knowledge(course)
-    if not 1 <= max_concurrent <= 8 or max_attempts < 1: raise ValueError('Invalid pool policy')
+    if max_attempts < 1: raise ValueError('Invalid pool policy')
     path = course / LEDGER
     old = read_json(path) if path.exists() else {}
-    if active_attempts(old): raise ValueError('先确认旧讲义成员停止并收集')
+    if active_records(old): raise ValueError('先确认上一章的写入已提交或已放弃，再重建输入包')
     index = read_json(course / INDEX)
     if not index.get('lessons'): raise ValueError('学习路径与 lesson 索引尚未完成')
     from obsidian_links import initialize
     initialize(course); mapping = build_map(course)
+    root = Path(__file__).resolve().parents[1]
+    commits = commits_of(old)
     lessons = []
     for item in sorted(index['lessons'], key=lambda l: l['order']):
         if not item['path'].startswith('学习文档/') or not item['path'].endswith('.md'): raise ValueError('Invalid lesson path')
@@ -329,144 +417,78 @@ def prepare(course, max_concurrent=4, max_attempts=3):
                 and inside(course, item['path']).exists() and sha256(inside(course, item['path'])) == previous.get('output_hash'))
         row = dict(item, status='done' if keep else 'pending', input_hash=snap['input_hash'],
                    attempt_count=previous.get('attempt_count', 0) if previous.get('input_hash') == snap['input_hash'] else 0,
-                   knowledge_ids=[k['id'] for k in snap['knowledge']])
+                   knowledge_ids=[k['id'] for k in snap['knowledge']],
+                   folder=f"_工作区/讲义输入/{item['id']}", manifest=f"_工作区/讲义输入/{item['id']}/task.json")
         if keep:
             for k in ('output_hash', 'committed_attempt', 'allowed_links', 'allowed_blocks'): row[k] = previous[k]
-        elif previous.get('input_hash') == snap['input_hash'] and previous.get('resume_attempt'):
-            row['resume_attempt'] = previous['resume_attempt']
         item['status'] = 'complete' if keep else 'pending'
+        if not keep:
+            resume = None
+            if previous.get('input_hash') == snap['input_hash'] and previous.get('resume_record'):
+                resume = next((c for c in commits if c['id'] == previous['resume_record']), None)
+                if resume: row['resume_record'] = resume['id']
+            build_lesson_input(course, item, row, snap, mapping, root, resume)
         lessons.append(row)
-    data = {'schema_version': 2, 'engine': 'host-subagent', 'max_concurrent': max_concurrent,
-            'max_attempts': max_attempts, 'lessons': lessons, 'attempts': old.get('attempts', [])}
+    data = {'schema_version': 3, 'engine': 'main-agent', 'max_attempts': max_attempts,
+            'lessons': lessons, 'commits': commits}
     write_json(course / INDEX, index); write_json(path, data)
-    return {'lessons': len(lessons), 'pending': sum(l['status'] == 'pending' for l in lessons)}
+    return {'lessons': len(lessons), 'pending': sum(l['status'] == 'pending' for l in lessons),
+            'next': '主代理按 lesson order 逐章读取 manifest，按章节规范与模板写片段与 result.json；'
+                    '写完运行 commit --lesson <L-ID>'}
+
+
+def find(data, cid):
+    record = next(c for c in commits_of(data) if c['id'] == cid)
+    lesson = next(l for l in data['lessons'] if l['id'] == record['lesson_id'])
+    return record, lesson
+
+
+def register_exercises(course, lesson, result):
+    """Exercises actually written into the chapter become 'used' relation targets."""
+    path = course / '_工作区/练习索引.jsonl'
+    rows = read_jsonl(path) if path.exists() else []
+    index = {row['id']: row for row in rows}
+    allowed = set(lesson.get('allowed_blocks', []))
+    changed = False
+    for entry in result.get('exercises', []) or []:
+        exid = entry.get('id')
+        if not exid or exid not in allowed: continue
+        row = index.get(exid, {'id': exid, 'owner_lesson_id': lesson['id'], 'status': 'used',
+                               'assesses': [], 'source_refs': [], 'title': entry.get('heading', '')})
+        row.update(owner_lesson_id=lesson['id'], status='used',
+                   title=entry.get('heading') or row.get('title', ''))
+        if entry.get('assesses'):
+            row['assesses'] = sorted(set(row.get('assesses', [])) | set(entry['assesses']))
+        if entry.get('source_refs'):
+            row['source_refs'] = entry['source_refs']
+        index[exid] = row; changed = True
+    if not changed: return 0
+    atomic_text(path, ''.join(json.dumps(index[key], ensure_ascii=False) + '\n' for key in sorted(index)))
+    return len(result.get('exercises', []) or [])
 
 
 @validation_run
-def pump(course, host, model, max_fill=None, host_limit=None):
-    from assemble_knowledge import require_knowledge
+def commit(course, lesson_id):
+    """Verify the main agent's chapter draft, assemble identity/links, then commit it."""
     from convert_materials import now
-    require_knowledge(course)
-    if host not in HOSTS or not model.strip(): raise ValueError('Unknown host/model')
     data = read_json(course / LEDGER)
-    if host_limit is not None:
-        if not 1 <= host_limit <= 8: raise ValueError('Invalid host limit')
-        data.setdefault('host_limits', {})[host] = host_limit
-    if max_fill is not None and max_fill < 0: raise ValueError('Invalid max-fill')
-    slots = available_slots(data, host)
-    if max_fill is not None: slots = min(slots, max_fill)
-    tickets, blocked = [], []
-    root = Path(__file__).resolve().parents[1]
+    lesson = next(l for l in data['lessons'] if l['id'] == lesson_id)
+    if lesson['status'] == 'done':
+        return {'lesson': lesson_id, 'state': 'done', 'idempotent': True}
+    index = read_json(course / INDEX)
     mapping = build_map(course)
-    index = read_json(course / INDEX)
-    definitions = {l['id']: l for l in index['lessons']}
-    for lesson in data['lessons']:
-        if len(tickets) >= slots: break
-        if lesson['status'] not in {'pending', 'failed'} or lesson.get('current_attempt'): continue
-        if lesson['attempt_count'] >= data['max_attempts']:
-            lesson['status'] = 'needs_review'; continue
-        snap = snapshot(course, definitions[lesson['id']])
-        if snap['input_hash'] != lesson['input_hash']:
-            lesson['status'] = 'stale'; continue
-        aid = 'L-' + uuid.uuid4().hex
-        folder = f'_工作区/讲义尝试/{aid}'
-        lid = lesson['id']
-        output, result = f'{folder}/{lid}.md', f'{folder}/{lid}.result.json'
-        inputs = {'requirements': f'{folder}/学习需求.md', 'path': f'{folder}/路径片段.md', 'knowledge': f'{folder}/知识片段.md'}
-        atomic_text(inside(course, inputs['requirements']), snap['requirements'])
-        atomic_text(inside(course, inputs['path']), snap['path_excerpt'])
-        atomic_text(inside(course, inputs['knowledge']), '\n\n'.join(snap['slices'].values()))
-        if snap['prerequisite_slices']:
-            inputs['prerequisites'] = f'{folder}/前置知识片段.md'
-            atomic_text(inside(course, inputs['prerequisites']), '\n\n'.join(snap['prerequisite_slices'].values()))
-        registry_obj = Registry(course)
-        links, allowed, exercises = lesson_links(course, lesson, snap, mapping, registry_obj)
-        from lesson_parts import provision
-        previous = next((a for a in data['attempts'] if a['id'] == lesson.get('resume_attempt')), None)
-        if previous and previous['input_hash'] != snap['input_hash']: previous = None
-        try:
-            sections, protected, resume = provision(course, folder, lesson, previous)
-        except (OSError, ValueError, KeyError) as exc:
-            lesson.update(status='needs_review', error=str(exc)); blocked.append({'lesson': lid, 'error': str(exc)})
-            continue
-        if resume:
-            inputs['continuity'] = f'{folder}/续写摘要.json'
-            write_json(inside(course, inputs['continuity']), resume)
-        v2 = is_v2(course)
-        sections_meta = [dict(s, directory=str(inside(course, s['directory'])),
-                              receipt=str(inside(course, s['receipt'])),
-                              anchor_literal=(f"{s['knowledge_ids'][0]} ^{s['knowledge_ids'][0]}"
-                                              if s.get('knowledge_ids') else None),
-                              system_slots=['identity', 'relations'] if s.get('knowledge_ids') else [])
-                         for s in sections]
-        manifest = {'schema_version': 1 if not v2 else 2, 'kind': 'lesson', 'attempt_id': aid,
-                    'profile': 'chapter', 'lesson_id': lid,
-                    'title': lesson['title'], 'order': lesson['order'], 'knowledge_ids': lesson['knowledge_ids'],
-                    'graph_policy_version': GRAPH_POLICY_VERSION,
-                    'registry_revision': registry_obj.structure_revision(),
-                    'input_content_hash': snap['input_hash'],
-                    'inputs': {k: str(inside(course, p)) for k, p in inputs.items()},
-                    'policy': str(root / 'references/lesson-worker-policy.md'),
-                    'writing_spec': str(root / 'references/chapter-writing.md'),
-                    'template': str(root / 'assets/templates/learning-chapter.md'),
-                    'output': str(inside(course, output)), 'result': str(inside(course, result)),
-                    'write_mode': 'parts-v1', 'parent_attempt_id': previous['id'] if previous else None,
-                    'sections': sections_meta,
-                    'links': links, 'allowed_blocks': lesson['knowledge_ids'] + exercises,
-                    'reserved_exercises': [{'id': ex, 'owner_lesson_id': lid} for ex in exercises],
-                    'agent_can_write_system_regions': False if v2 else True,
-                    'tools': {k: HOSTS[host][k] for k in ('read_text', 'write')}}
-        manifest['link_manifest_hash'] = digest({'sections': sections_meta, 'links': links})
-        task = folder + '/task.json'; write_json(inside(course, task), manifest)
-        member = 'lesson_' + lid.replace('-', '_').lower() + '_' + aid[-8:]
-        attempt = {'id': aid, 'kind': 'lesson', 'lesson_id': lid, 'profile': 'chapter', 'state': 'reserved',
-                   'host': host, 'model': model, 'host_agent_id': None, 'logical_member': member,
-                   'input_hash': snap['input_hash'], 'input_hashes': {p: sha256(inside(course, p)) for p in inputs.values()},
-                   'task_manifest': task, 'task_hash': sha256(inside(course, task)),
-                   'output': output, 'result': result, 'allowed_links': allowed, 'allowed_blocks': manifest['allowed_blocks'],
-                   'write_mode': 'parts-v1', 'sections': sections, 'protected_chunks': protected,
-                   'knowledge_target': mapping['knowledge'], 'parent_attempt_id': manifest['parent_attempt_id'],
-                   'agent_may_write_system_regions': manifest['agent_can_write_system_regions'],
-                   'link_manifest_hash': manifest['link_manifest_hash'],
-                   'reserved_at': now()}
-        data['attempts'].append(attempt)
-        lesson.update(status='reserved', current_attempt=aid, attempt_count=lesson['attempt_count'] + 1)
-        tickets.append({'attempt': aid, 'profile': 'chapter', 'member': member,
-                        'bootstrap': f'读取 {inside(course, task)} 与其中 policy，一章按 sections 边写边存片段与回执；已有片段不重写，只补缺失。最终 output 由脚本合并。失败须留 partial/failed，不只说改为分段就结束。不生成卡片、不派生，只回短状态。',
-                        'host_action': HOSTS[host]['spawn']})
-    write_json(course / LEDGER, data)
-    return {'tickets': tickets, 'blocked': blocked}
-
-
-def find(data, aid):
-    attempt = next(a for a in data['attempts'] if a['id'] == aid)
-    lesson = next(l for l in data['lessons'] if l['id'] == attempt['lesson_id'])
-    return attempt, lesson
-
-
-def mark_running(course, aid, agent_id):
-    from convert_materials import now
-    data = read_json(course / LEDGER); a, lesson = find(data, aid)
-    if a['state'] != 'reserved' or not agent_id or any(x.get('host_agent_id') == agent_id for x in data['attempts']):
-        raise ValueError('Invalid host ID binding')
-    a.update(state='running', host_agent_id=agent_id, started_at=now()); lesson['status'] = 'running'
-    write_json(course / LEDGER, data); return {'attempt': aid, 'state': 'running'}
-
-
-def refill_result(course, attempt):
-    try:
-        result = pump(course, attempt['host'], attempt['model'])
-        return {'refill': result['tickets'], 'refill_blocked': result['blocked']}
-    except (OSError, ValueError, KeyError) as exc: return {'refill': [], 'refill_blocked': str(exc)}
-
-
-@validation_run
-def collect(course, aid, stopped_agent_id, refill=True):
-    from convert_materials import now
-    data = read_json(course / LEDGER); a, lesson = find(data, aid)
-    if a['state'] in {'committed', 'collected'}: return {'attempt': aid, 'idempotent': True, 'refill': []}
-    require_stopped(a, stopped_agent_id)
-    index = read_json(course / INDEX)
+    output_error = ''
+    cid = 'C-' + uuid.uuid4().hex
+    a = {'id': cid, 'kind': 'main', 'lesson_id': lesson_id, 'state': 'drafting',
+         'input_hash': lesson['input_hash'], 'input_hashes': lesson.get('input_hashes', {}),
+         'task_manifest': lesson['manifest'], 'task_hash': lesson.get('task_hash'),
+         'output': lesson.get('output'), 'result': lesson.get('result'),
+         'allowed_links': lesson.get('allowed_links', []), 'allowed_blocks': lesson.get('allowed_blocks', []),
+         'write_mode': 'parts-v1', 'sections': lesson.get('sections', []),
+         'protected_chunks': lesson.get('protected_chunks', {}),
+         'knowledge_target': mapping['knowledge'],
+         'agent_may_write_system_regions': lesson.get('agent_may_write_system_regions', True),
+         'link_manifest_hash': lesson.get('link_manifest_hash'), 'started_at': now()}
     definition = next(l for l in index['lessons'] if l['id'] == lesson['id'])
     kind = 'STALE_INPUT'
     try:
@@ -477,29 +499,28 @@ def collect(course, aid, stopped_agent_id, refill=True):
         if (sha256(inside(course, a['task_manifest'])) != a['task_hash'] or any(
                 sha256(inside(course, p)) != h for p, h in a['input_hashes'].items())):
             kind = 'STALE_INPUT'; raise ValueError('Assigned inputs changed')
-        if a.get('write_mode') == 'parts-v1' and not a.get('commit_hash'):
-            from lesson_parts import collect_parts
-            kind = 'INVALID_OUTPUT'
-            if not collect_parts(course, a, lesson):
-                kind = 'PARTIAL_OUTPUT'
-                raise ValueError('Incomplete lesson; saved chunks retained, only missing parts will be retried')
-        staged, canonical = inside(course, a['output']), inside(course, lesson['path'])
-        candidate = canonical if a.get('commit_hash') and not staged.exists() else staged
-        if not candidate.exists() or not inside(course, a['result']).exists():
-            kind = 'WRITE_FAILURE'; raise ValueError('Missing attempt output/result')
+        from lesson_parts import collect_parts
+        kind = 'INVALID_OUTPUT'
+        if not collect_parts(course, a, lesson):
+            kind = 'PARTIAL_OUTPUT'
+            raise ValueError('章节草稿未写完；已保存片段保留，只补缺失片段')
+        staged = inside(course, a['output'])
+        if not staged.exists() or not inside(course, a['result']).exists():
+            kind = 'WRITE_FAILURE'; raise ValueError('缺少本章合并输出或 result 回执')
         kind = 'INVALID_OUTPUT'
         result = read_json(inside(course, a['result']))
         if result.get('status') != 'complete' or result.get('lesson_id') != lesson['id'] or sorted(result.get('knowledge_ids', [])) != sorted(lesson['knowledge_ids']):
             raise ValueError('Incomplete/foreign lesson result')
-        raw = candidate.read_text(encoding='utf-8')
+        raw = staged.read_text(encoding='utf-8')
         if not raw.strip(): raise ValueError('Empty output')
         documents = {}
         if is_v2(course):
             if '<!-- BL-' in raw:
-                raise ValueError('RESERVED_SYSTEM_MARKUP: 成员交付不得包含系统边界或关系区')
+                raise ValueError('RESERVED_SYSTEM_MARKUP: 主代理草稿不得包含系统边界或关系区')
             assembled = assemble_lesson_document(course, a, lesson, raw)
             documents, _graph = sync_candidate(course, {lesson['path']: assembled}, phase='staged')
-            problems = validate_candidate(course, documents, phase='staged')
+            # Mid-course commit: later lessons, steps and entries may not exist yet.
+            problems = validate_candidate(course, documents, phase='staged', require_targets=False)
             if problems:
                 kind = 'INVALID_OUTPUT'
                 raise ValueError('; '.join(problems))
@@ -514,74 +535,59 @@ def collect(course, aid, stopped_agent_id, refill=True):
             if any(not _has(legacy_block_section(raw, k), mapping['knowledge'], k) for k in lesson['knowledge_ids']):
                 kind = 'INVALID_LINK_TARGET'; raise ValueError('Missing knowledge backlink in its assigned block')
             documents = {lesson['path']: raw}
-        if a.get('commit_hash') and sha256(candidate) != a['commit_hash']: raise ValueError('Commit receipt differs')
         tx = Transaction(course, course / '_工作区/事务记录.jsonl')
-        for path, text in documents.items():
-            tx.write(inside(course, path), text)
+        # Only this chapter is committed; other documents keep their relation
+        # regions until the Obsidian rebuild step, so the knowledge base is never
+        # rewritten mid-course (which would stale every remaining chapter).
+        tx.write(inside(course, lesson['path']), documents[lesson['path']])
         tx.commit()
-        raw_hash = sha256(candidate)
+        raw_hash = sha256(staged)
         if is_v2(course):
             atomic_text(inside(course, a['output'].removesuffix('.md') + '.assembled.md'),
                         documents[lesson['path']])
-        a.update(state='produced', commit_hash=sha256(inside(course, lesson['path'])), raw_hash=raw_hash)
-        write_json(course / LEDGER, data)
-        lesson.update(status='done', output_hash=sha256(inside(course, lesson['path'])), committed_attempt=aid,
+        a.update(state='committed', commit_hash=sha256(inside(course, lesson['path'])), raw_hash=raw_hash)
+        lesson.update(status='done', output_hash=sha256(inside(course, lesson['path'])), committed_attempt=cid,
                       allowed_links=a['allowed_links'], allowed_blocks=a['allowed_blocks'])
-        lesson.pop('resume_attempt', None)
-        a['state'] = 'committed'; definition['status'] = 'complete'; kind = None
+        lesson.pop('resume_record', None)
+        definition['status'] = 'complete'; kind = None
+        register_exercises(course, lesson, result)
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         if kind == 'INVALID_OUTPUT' and 'INVALID_LINK_TARGET' in str(exc): kind = 'INVALID_LINK_TARGET'
         a.update(state='collected', failure_kind=kind, error=str(exc))
-        lesson['status'] = 'stale' if kind == 'STALE_INPUT' else 'needs_review' if lesson['attempt_count'] >= data['max_attempts'] else 'failed'
+        output_error = str(exc)
+        lesson['status'] = ('stale' if kind == 'STALE_INPUT'
+                            else 'needs_review' if lesson.get('attempt_count', 0) + 1 >= data.get('max_attempts', 3)
+                            else 'failed')
         definition['status'] = lesson['status']
-        if kind == 'STALE_INPUT': lesson.pop('resume_attempt', None)
-        elif a.get('part_progress'): lesson['resume_attempt'] = aid
-    a['finished_at'] = now(); lesson['current_attempt'] = None
+        if kind == 'STALE_INPUT': lesson.pop('resume_record', None)
+        elif a.get('part_progress'): lesson['resume_record'] = cid
+    lesson['attempt_count'] = lesson.get('attempt_count', 0) + 1
+    a['finished_at'] = now()
+    data.setdefault('commits', []).append(a)
     write_json(course / LEDGER, data); write_json(course / INDEX, index)
     progress_path = course / '_工作区/生成进度.json'
     progress = read_json(progress_path)
     progress['completed_lessons'] = [l['id'] for l in data['lessons'] if l['status'] == 'done']
     write_json(progress_path, progress)
-    result = {'attempt': aid, 'lesson': lesson['id'], 'state': a['state'], 'failure_kind': kind,
+    output = {'commit': cid, 'lesson': lesson['id'], 'state': a['state'], 'failure_kind': kind,
               'saved_sections': len(a.get('part_progress', {})), 'missing_sections': a.get('missing_sections', [])}
+    if kind is not None: output['error'] = output_error
     if kind and a.get('worker_result'):
         worker = a['worker_result']
-        result['worker_failure'] = {'status': worker.get('status'), 'error_kind': worker.get('error_kind'),
-                                    'reason': str(worker.get('reason', ''))[:500]}
-    if refill: result.update(refill_result(course, a))
-    return result
-
-
-def fail_attempt(course, aid, kind, stopped_agent_id=None, refill=True):
-    if kind not in {'SPAWN_FAILURE', 'TEMP_TOOL_FAILURE', 'WRITE_FAILURE', 'TIMED_OUT', 'INVALID_OUTPUT'}:
-        raise ValueError('Invalid lesson failure')
-    data = read_json(course / LEDGER); a, lesson = find(data, aid)
-    if a['state'] in {'committed', 'collected'}: return {'attempt': aid, 'idempotent': True, 'refill': []}
-    if a['state'] == 'reserved':
-        if kind != 'SPAWN_FAILURE': raise ValueError('First resolve uncertain spawn outcome')
+        output['draft_failure'] = {'status': worker.get('status'), 'error_kind': worker.get('error_kind'),
+                                   'reason': str(worker.get('reason', ''))[:500]}
+    if kind is None:
+        output['next'] = '本章已提交；继续下一章，全部 commit 后运行 check'
     else:
-        require_stopped(a, stopped_agent_id)
-        if a.get('write_mode') == 'parts-v1':
-            # A timeout/tool failure may still have durable output. Collect before retry.
-            outcome = collect(course, aid, stopped_agent_id, refill=False)
-            data = read_json(course / LEDGER); a, lesson = find(data, aid)
-            a['reported_failure'] = kind
-            write_json(course / LEDGER, data)
-            if refill: outcome.update(refill_result(course, a))
-            return outcome
-    a.update(state='collected', failure_kind=kind)
-    lesson.update(status='needs_review' if lesson['attempt_count'] >= data['max_attempts'] else 'failed', current_attempt=None)
-    write_json(course / LEDGER, data)
-    result = {'attempt': aid, 'state': a['state']}
-    if refill: result.update(refill_result(course, a))
-    return result
+        output['next'] = '按 failure_kind 修正草稿片段后重新 commit；已保存片段不会被清空'
+    return output
 
 
 @validation_run
 def check(course):
     if not (course / LEDGER).exists(): return ['Missing lesson task ledger']
     data = read_json(course / LEDGER); errors = []
-    if active_attempts(data): errors.append('Active lesson attempts remain')
+    if active_records(data): errors.append('有未提交的章节草稿正在处理')
     index = read_json(course / INDEX)
     definitions = {l['id']: l for l in index['lessons']}
     if set(definitions) != {l['id'] for l in data['lessons']}: errors.append('Lesson scope changed')
@@ -592,9 +598,12 @@ def check(course):
             path = inside(course, lesson['path'])
             if sha256(path) != lesson['output_hash']: raise ValueError('Lesson output changed')
             a, _ = find(data, lesson['committed_attempt'])
-            if a['state'] != 'committed' or not a.get('host_agent_id') or a['commit_hash'] != lesson['output_hash']:
+            if a['state'] != 'committed' or a.get('commit_hash') != lesson['output_hash']:
                 raise ValueError('Lesson commit evidence missing')
-            errors.extend(validate_document(course, path.read_text(encoding='utf-8'), lesson['allowed_links'], lesson['allowed_blocks']))
+            # The lesson's own identity block is defined by the assembler, not by the writer.
+            allowed_blocks = list(lesson['allowed_blocks']) + [lesson['id']]
+            errors.extend(validate_document(course, path.read_text(encoding='utf-8'),
+                                            lesson['allowed_links'], allowed_blocks))
         except (OSError, ValueError, KeyError, StopIteration) as exc: errors.append(lesson['id'] + ': ' + str(exc))
     return errors
 
@@ -604,7 +613,7 @@ def record_link_relocation(course, target_moves):
     path = course / LEDGER
     if not path.exists(): return
     data = read_json(path)
-    if active_attempts(data): raise ValueError('Cannot relocate links with active lesson members')
+    if active_records(data): raise ValueError('有未提交的章节草稿，不能搬迁链接')
     definitions = {l['id']: l for l in read_json(course / INDEX)['lessons']}
     def rewrite_key(key):
         target, sep, anchor = key.partition('#')
@@ -634,30 +643,25 @@ def record_link_relocation(course, target_moves):
 def main():
     p = argparse.ArgumentParser(description=__doc__); p.add_argument('--course', required=True, type=Path)
     sub = p.add_subparsers(dest='command', required=True)
-    q = sub.add_parser('prepare'); q.add_argument('--max-concurrent', type=int, default=4); q.add_argument('--max-attempts', type=int, default=3)
-    q = sub.add_parser('pump'); q.add_argument('--host', default=DEFAULT_HOST); q.add_argument('--model', required=True); q.add_argument('--host-limit', type=int); q.add_argument('--max-fill', type=int)
-    q = sub.add_parser('mark-running'); q.add_argument('--attempt', required=True); q.add_argument('--agent-id', required=True)
-    for name in ('collect', 'recover', 'fail-attempt'):
-        q = sub.add_parser(name); q.add_argument('--attempt', required=True); q.add_argument('--stopped-agent-id', required=name != 'fail-attempt')
-        if name == 'fail-attempt': q.add_argument('--kind', required=True)
+    q = sub.add_parser('prepare'); q.add_argument('--max-attempts', type=int, default=3)
+    q = sub.add_parser('commit'); q.add_argument('--lesson', required=True)
     sub.add_parser('check'); sub.add_parser('status')
     a = p.parse_args(); course = a.course.resolve()
     from convert_materials import locked
     try:
         with locked(course):
-            if a.command == 'prepare': result = prepare(course, a.max_concurrent, a.max_attempts)
-            elif a.command == 'pump': result = pump(course, a.host, a.model, a.max_fill, a.host_limit)
-            elif a.command == 'mark-running': result = mark_running(course, a.attempt, a.agent_id)
-            elif a.command in {'collect', 'recover'}: result = collect(course, a.attempt, a.stopped_agent_id)
-            elif a.command == 'fail-attempt': result = fail_attempt(course, a.attempt, a.kind, a.stopped_agent_id)
+            if a.command == 'prepare': result = prepare(course, a.max_attempts)
+            elif a.command == 'commit': result = commit(course, a.lesson)
             elif a.command == 'check': result = {'errors': check(course)}
             else:
                 data = read_json(course / LEDGER)
-                result = {'lessons': [{'id': l['id'], 'status': l['status'], 'resume_attempt': l.get('resume_attempt'),
-                                      'attempt_count': l['attempt_count']} for l in data['lessons']],
-                          'active': [{'attempt': x['id'], 'agent_id': x['host_agent_id'], 'state': x['state'],
-                                      'member': x['logical_member'], 'task_manifest': x['task_manifest'],
-                                      'host': x['host']} for x in active_attempts(data)]}
+                result = {'engine': data.get('engine', 'main-agent'),
+                          'lessons': [{'id': l['id'], 'status': l['status'], 'attempt_count': l['attempt_count'],
+                                       'manifest': l.get('manifest'), 'folder': l.get('folder'),
+                                       'resume_record': l.get('resume_record')} for l in data['lessons']],
+                          'pending': [l['id'] for l in data['lessons'] if l['status'] != 'done'],
+                          'active': [{'commit': x['id'], 'lesson': x['lesson_id'], 'state': x['state']}
+                                     for x in active_records(data)]}
         print(json.dumps(result, ensure_ascii=False)); return 1 if result.get('errors') else 0
     except (OSError, ValueError, KeyError, StopIteration) as exc:
         print(json.dumps({'error': str(exc)}, ensure_ascii=False)); return 2

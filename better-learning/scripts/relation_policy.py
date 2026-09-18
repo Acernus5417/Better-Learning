@@ -509,7 +509,11 @@ def reviewed_data(course):
     for entry in knowledge:
         if entry.get('status') == 'merged':
             continue
-        chapter_members.setdefault(entry.get('chapter_id'), []).append(entry['id'])
+        # Knowledge without a chapter cannot become an index member; it stays in
+        # the knowledge index and is reported by the structural validation.
+        if not entry.get('chapter_id'):
+            continue
+        chapter_members.setdefault(entry['chapter_id'], []).append(entry['id'])
     path = _path_index(course)
     if not path:
         path = {'path_id': 'P-MAIN', 'title': '学习路径', 'derived': True,

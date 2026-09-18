@@ -16,7 +16,7 @@ from attempt_tasks import mark_running, fail_attempt
 from capability_probe import start, finish
 from inventory_materials import inventory
 from extract_materials import Reader
-from transcribe_materials import check_all, context, BLOCK
+from transcribe_materials import check_all, context, V2_UNIT
 from validate_package import validate
 
 
@@ -176,8 +176,9 @@ class RefactorTests(unittest.TestCase):
         def counted(path):
             calls[str(path)] += 1
             return original(path)
-        with patch('_common._sha256', side_effect=counted), patch('transcribe_materials.BLOCK') as parser:
-            parser.finditer.side_effect = BLOCK.finditer
+        # v2 transcripts are parsed with V2_UNIT; the whole run must parse each source once.
+        with patch('_common._sha256', side_effect=counted), patch('transcribe_materials.V2_UNIT') as parser:
+            parser.finditer.side_effect = V2_UNIT.finditer
             # Minimal course intentionally lacks teaching docs. Performance checks still run.
             validate(self.course)
             self.assertEqual(parser.finditer.call_count, 1)

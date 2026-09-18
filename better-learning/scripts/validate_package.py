@@ -8,8 +8,8 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-from _common import validation_run, validation_context, extraction_path, inside, read_json, read_jsonl, sha256, source_index, write_json
-from assemble_knowledge import build_content
+from _common import validation_run, validation_context, extraction_path, inside, read_json, read_jsonl, sha256, source_index, utc_now, write_json
+from assemble_knowledge import build_content, _teaching_text
 from entity_registry import Registry, config as course_config, document as registry_document, is_v2
 from entity_sections import SectionError, parse_sections
 
@@ -78,6 +78,9 @@ def validate(course: Path, mode: str = 'final') -> dict:
     counts = {'sources': 0, 'units': 0, 'knowledge': 0, 'lessons': 0, 'cards': 0}
     v2 = is_v2(course)
     registry_obj = Registry(course) if v2 else None
+    # Packaged layout: the extraction tree and attempt staging are deleted by design,
+    # so transcript/coverage checks belong to the final run that precedes package.
+    offline = mode == 'packaged'
 
     def fail(message):
         errors.append(message)
@@ -112,47 +115,48 @@ def validate(course: Path, mode: str = 'final') -> dict:
     if state.get('stage') in {'needs_update', 'blocked'}:
         fail('生成进度尚处于 ' + state['stage'])
 
-    manifest = load('_工作区/资料索引.json', fallback={'sources': []})
-    sources = manifest.get('sources', [])
-    counts['sources'] = len(sources)
-    from transcribe_materials import check_all, context as transcript_context, verify_vision
-    for error in check_all(course):
-        fail(error)
-    if not sources:
-        fail('没有源文件')
-    if len({s['id'] for s in sources}) != len(sources):
-        fail('资料 ID 重复')
-    source_by_id = {s['id']: s for s in sources}
-    units = {}
-    for source in sources:
-        try:
-            if sha256(Path(source['path'])) != source['sha256']:
-                fail('源文件已变更，需要重新盘点：' + source['id'])
-        except OSError as exc:
-            fail('源文件不可访问：' + source['id'] + ': ' + str(exc))
-        relative = (extraction_path(course, source) / '定位映射.json').relative_to(course).as_posix()
-        mapping = load(relative, fallback={})
-        entries = mapping.get('units', [])
-        if mapping.get('source_hash') != source['sha256'] or mapping.get('source_id') != source['id']:
-            fail('提取版本与源文件不匹配：' + source['id'])
-        expected = mapping.get('total_units', 0)
-        if expected < 1 or len(entries) != expected:
-            fail('源单元数量不完整：' + source['id'])
-        if [u.get('ordinal') for u in entries] != list(range(1, expected + 1)):
-            fail('源单元顺序缺失或重复：' + source['id'])
-        for unit in entries:
-            key = (source['id'], unit['id'])
-            if key in units:
-                fail('重复源单元：' + str(key))
-            units[key] = unit
-            for target in unit.get('chunks', []) + unit.get('images', []):
-                # Empty extracted text is allowed, but its file must exist.
-                try:
-                    if not inside(course, target).is_file():
-                        fail('缺少提取文件：' + target)
-                except ValueError as exc:
-                    fail(str(exc))
-    counts['units'] = len(units)
+    sources, units, source_by_id = [], {}, {}
+    if not offline:
+        manifest = load('_工作区/资料索引.json', fallback={'sources': []})
+        sources = manifest.get('sources', [])
+        counts['sources'] = len(sources)
+        from transcribe_materials import check_all, context as transcript_context, verify_vision
+        for error in check_all(course):
+            fail(error)
+        if not sources:
+            fail('没有源文件')
+        if len({s['id'] for s in sources}) != len(sources):
+            fail('资料 ID 重复')
+        source_by_id = {s['id']: s for s in sources}
+        for source in sources:
+            try:
+                if sha256(Path(source['path'])) != source['sha256']:
+                    fail('源文件已变更，需要重新盘点：' + source['id'])
+            except OSError as exc:
+                fail('源文件不可访问：' + source['id'] + ': ' + str(exc))
+            relative = (extraction_path(course, source) / '定位映射.json').relative_to(course).as_posix()
+            mapping = load(relative, fallback={})
+            entries = mapping.get('units', [])
+            if mapping.get('source_hash') != source['sha256'] or mapping.get('source_id') != source['id']:
+                fail('提取版本与源文件不匹配：' + source['id'])
+            expected = mapping.get('total_units', 0)
+            if expected < 1 or len(entries) != expected:
+                fail('源单元数量不完整：' + source['id'])
+            if [u.get('ordinal') for u in entries] != list(range(1, expected + 1)):
+                fail('源单元顺序缺失或重复：' + source['id'])
+            for unit in entries:
+                key = (source['id'], unit['id'])
+                if key in units:
+                    fail('重复源单元：' + str(key))
+                units[key] = unit
+                for target in unit.get('chunks', []) + unit.get('images', []):
+                    # Empty extracted text is allowed, but its file must exist.
+                    try:
+                        if not inside(course, target).is_file():
+                            fail('缺少提取文件：' + target)
+                    except ValueError as exc:
+                        fail(str(exc))
+        counts['units'] = len(units)
 
     index = load('_工作区/章节索引.json', fallback={})
     chapters = index.get('chapters', [])
@@ -234,9 +238,10 @@ def validate(course: Path, mode: str = 'final') -> dict:
             fail('知识 kind 无效：' + kid)
         if k.get('kind') == 'material' and not k.get('source_refs'):
             fail('材料知识没有来源：' + kid)
-        for ref in k.get('source_refs', []):
-            if (ref.get('source_id'), ref.get('unit_id')) not in units:
-                fail('知识来源单元无效：' + kid)
+        if not offline:
+            for ref in k.get('source_refs', []):
+                if (ref.get('source_id'), ref.get('unit_id')) not in units:
+                    fail('知识来源单元无效：' + kid)
         if not k.get('lesson_ids'):
             fail('知识没有学习文档去向：' + kid)
         for lid in k.get('lesson_ids', []):
@@ -302,7 +307,7 @@ def validate(course: Path, mode: str = 'final') -> dict:
     if visited != len(known):
         fail('知识前置依赖存在循环')
 
-    coverage = load('_工作区/覆盖台账.jsonl', lines=True, fallback=[])
+    coverage = [] if offline else load('_工作区/覆盖台账.jsonl', lines=True, fallback=[])
     covered = {}
     for record in coverage:
         key = (record.get('source_id'), record.get('unit_id'))
@@ -312,7 +317,7 @@ def validate(course: Path, mode: str = 'final') -> dict:
         if key not in units:
             fail('覆盖台账引用当前范围外的单元：' + str(key))
     statuses = Counter()
-    for key, unit in units.items():
+    for key, unit in ({} if offline else units).items():
         record = covered.get(key)
         if not record:
             fail('尚未登记覆盖：' + str(key))
@@ -369,20 +374,23 @@ def validate(course: Path, mode: str = 'final') -> dict:
                 fail('源单元仍有图片未逐区域读取：' + str(key))
         if not record.get('evidence'):
             fail('缺少阅读/复核说明：' + str(key))
-    for k in knowledge:
-        for ref in k.get('source_refs', []):
-            record = covered.get((ref.get('source_id'), ref.get('unit_id')), {})
-            if k['id'] not in record.get('knowledge_ids', []):
-                fail('知识与来源覆盖映射不一致：' + k['id'])
+    if not offline:
+        for k in knowledge:
+            for ref in k.get('source_refs', []):
+                record = covered.get((ref.get('source_id'), ref.get('unit_id')), {})
+                if k['id'] not in record.get('knowledge_ids', []):
+                    fail('知识与来源覆盖映射不一致：' + k['id'])
     counts['coverage'] = dict(statuses)
 
-    try:
-        expected = build_content(course, validate_transcripts=str(course.resolve()) not in validation_context().transcripts_checked)
-        actual = (course / '知识内容.md').read_text(encoding='utf-8')
-        if actual != expected:
-            fail('知识内容.md 与知识分片不一致，请重新运行合并脚本')
-    except (OSError, ValueError, KeyError) as exc:
-        fail('知识汇编检查失败：' + str(exc))
+    if not offline:
+        try:
+            expected = build_content(course, validate_transcripts=str(course.resolve()) not in validation_context().transcripts_checked)
+            actual = (course / '知识内容.md').read_text(encoding='utf-8')
+            # Relation regions are derived: rendering them is not a knowledge mismatch.
+            if _teaching_text(actual) != _teaching_text(expected):
+                fail('知识内容.md 与知识分片不一致，请重新运行合并脚本')
+        except (OSError, ValueError, KeyError) as exc:
+            fail('知识汇编检查失败：' + str(exc))
 
     if v2:
         for error in validate_source_shells(course):
@@ -437,11 +445,7 @@ def validate(course: Path, mode: str = 'final') -> dict:
               'layout': course_config(course).get('layout', 'working'),
               'graph_policy_version': course_config(course).get('graph_policy_version')}
     if v2 and mode == 'final' and not errors:
-        snapshot = {'schema_version': 1, 'mode': 'final',
-                    'files': {relative: sha256(course / relative)
-                              for relative in learner_texts(course)},
-                    'registry_revision': registry_obj.revision() if registry_obj else None}
-        write_json(course / SNAPSHOT, snapshot)
+        record_snapshot(course, 'final')
         report['snapshot'] = SNAPSHOT
     if v2 and mode == 'packaged':
         for problem in validate_packaged(course, snapshot_receipt(course), errors):
@@ -454,6 +458,22 @@ def validate(course: Path, mode: str = 'final') -> dict:
 def snapshot_receipt(course):
     path = course / SNAPSHOT
     return read_json(path) if path.exists() else {}
+
+
+def record_snapshot(course: Path, mode: str = 'final') -> dict:
+    """Write the deliverable hash snapshot used to detect post-stage edits.
+
+    `package` moves documents and rewrites their links, so it refreshes the
+    snapshot as its last step; `--mode packaged` then verifies the delivered
+    files are exactly those recorded and that every target still resolves.
+    """
+    course = course.resolve()
+    registry_obj = Registry(course) if is_v2(course) else None
+    snapshot = {'schema_version': 1, 'mode': mode, 'recorded_at': utc_now(),
+                'files': {relative: sha256(course / relative) for relative in learner_texts(course)},
+                'registry_revision': registry_obj.revision() if registry_obj else None}
+    write_json(course / SNAPSHOT, snapshot)
+    return snapshot
 
 
 def learner_texts(course):

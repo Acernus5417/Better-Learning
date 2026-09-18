@@ -1,53 +1,50 @@
-# 讲义并发与核心卡片收口
+# 讲义生成（主代理）与核心卡片收口
 
-入口条件：全部资料转写完成、知识分片完整且知识条目 verified，知识内容.md 已通过 assemble_knowledge.py --check；学习路径已落盘，章节索引的 lessons 列出稳定 ID、title、order、path、status 和 path_excerpt（或路径中带该 lesson ID 的独立段落）。路径片段应包含本章目标、先修、顺序、过关标准，不是整份路径副本。
+入口条件：全部资料转写完成、知识分片完整且知识条目 verified，`知识内容.md` 已通过 `assemble_knowledge.py --check`；学习路径已落盘，章节索引的 lessons 列出稳定 ID、title、order、path、status 和 path_excerpt（或路径中带该 lesson ID 的独立段落）。路径片段应包含本章目标、先修、顺序、过关标准，不是整份路径副本。
 
-## 章级任务
+**讲义不再并发派发子 Agent**：每章由主代理本人写作，脚本负责输入包、装配、校验与提交。
 
-```text
-python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE prepare --max-concurrent 4
-python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE pump --host HOST --model ACTUAL_MODEL
-```
-
-每个 ticket 是一章、一个 fresh context。只转发 bootstrap；成员自读 task.json、分配的知识片段/路径片段/需求、[章节规范](chapter-writing.md)、模板和 [讲义成员策略](lesson-worker-policy.md)。不预读整本课程或全部 references，不看教材图片，不生成最终卡片。任务同时给出 canonical link 字面量、预留 EX ID 和本事务的 graph policy / registry revision；模型只能消费 manifest 里给出的身份与路径。
-
-v2 manifest（`schema_version: 2`）的成员权限是**只读正文、只写片段**：`agent_can_write_system_regions: false`；`sections[].anchor_literal` 与 `system_slots` 只说明脚本会插入什么，成员不得自己写 `BL-*`、`ID ^ID` 或 `^K/^EX`。任务按矩阵只分发可用关系：分配知识的 canonical K 链接、前置知识 canonical K 链接、本章学习步骤链接，以及已登记题源练习的 `exercise_sources`；不提供本讲义自链接、来源文件整篇链接或“相关”类链接。
-
-任务包含本章直接依赖的前置知识片段与路径步骤片段，不携带整套课程。EX ID 预留数量默认为 `max(24, 6×本章知识数+12)`，可在章节索引设置 exercise_count；它是可用 ID 池，不是练习数量要求；未使用的预留 ID 保持 reserved，不构成有效关系目标。
-
-宿主启动成功后登记；任一成员完成并确认停止后收集：
+## 一、章级输入包
 
 ```text
-python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE mark-running --attempt L-ATTEMPT --agent-id REAL_ID
-python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE collect --attempt L-ATTEMPT --stopped-agent-id REAL_ID
+python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE prepare
 ```
 
-collect 返回 refill，主代理立即启动新 ticket，不等其他章结束。默认并发 4，支持 1..8；pump 的 --host-limit 可按实际宿主可用槽位降低。失败恢复命令与转写一致：fail-attempt --kind SPAWN_FAILURE|TEMP_TOOL_FAILURE|WRITE_FAILURE|TIMED_OUT|INVALID_OUTPUT；运行中失败必须先确认停止并传 --stopped-agent-id。recover 等同于恢复收集，旧成员未停止不得释放租约。
+每章生成 `_工作区/讲义输入/<L-ID>/task.json` 及其输入文件（学习需求、路径片段、知识片段、前置知识片段、`parts/Sxxx/`）。主代理只转发/读取这些路径；manifest 已包含 canonical link 字面量、预留 EX ID、本事务的 graph policy / registry revision、章节规范与模板的绝对路径，模型只能消费 manifest 里给出的身份与路径。
 
-等待章节完成遵循 [宿主事件循环](host-adapter.md#七完成事件与等待)：等待任一成员事件，终态确认后立即 collect / refill；不固定休眠、不按章序等待。章节顺序决定教学路径，不决定结果收集顺序。
+manifest 权限与转写阶段一致：**只读正文、只写片段**；`agent_can_write_system_regions: false`，`sections[].anchor_literal` 与 `system_slots` 只说明脚本会插入什么，写作者不得自己写 `BL-*`、`ID ^ID` 或 `^K/^EX`。链接按矩阵只分发可用关系：分配知识的 canonical K 链接、前置知识 canonical K 链接、本章学习步骤链接，以及已登记题源练习的 `exercise_sources`。
 
-pump 返回中断时先运行 status，从 active 的 member/task_manifest 找回预约。必须先核实宿主是否已经启动该成员；确认未启动才按已有 manifest 启动，已启动则补记真实 ID，不能盲目再次 spawn。
+EX ID 预留数量默认为 `max(24, 6×本章知识数+12)`，可在章节索引设置 exercise_count；它是可用 ID 池，不是练习数量要求；未使用的预留 ID 保持 reserved，不构成有效关系目标。
 
-新任务采用 parts-v1 片段协议：成员按分配的 sections 写 `_工作区/讲义尝试/<attempt>/parts/S001/001.md` 等片段，逐片更新各节 section.json，最后写 `<lesson>.result.json`。回执只含节 ID、partial/complete、连续成功片段文件名；不要求按固定字符数切分。一章仍由一个成员负责，正式交付仍是一个 Markdown。
+**模板硬约束**：写作前先读 `assets/templates/learning-chapter.md`（`manifest.template`）。模板哈希已纳入输入快照，模板变化会让基于旧模板的章节失效，需要重新按模板核对。
 
-collect 分四步，且没有任何一步可以被“看起来差不多”绕过：
+## 二、主代理逐章写作
 
-1. **原始校验**：确认宿主停止、核对输入与受保护片段哈希、逐节检查回执/文件/围栏与公式边界/允许链接；片段中出现 `BL-*`、`ID ^ID` 锚点或 `^K/^EX` 直接报 `RESERVED_SYSTEM_MARKUP`。
-2. **装配**：按 section 清单合并片段，插入 `BL-L`、`BL-TEACH`、`BL-EX` 边界与该实体的入口锚点；练习区间由 result 的 `exercises[].heading` 定位，标题缺失或不唯一即 `INVALID_OUTPUT`。
+按 lesson order **一次一章**：读 `task.json` → 读 [章节规范](chapter-writing.md) 与模板 → 按 sections 写片段与回执 → 写 `result.json` → `commit`。写完立即提交再进入下一章；不把多章内容同时装入对话。写作细则见 [章级写作策略](lesson-writing-policy.md)。
+
+```text
+python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE commit --lesson L-01
+python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE status
+```
+
+commit 的流程没有任何一步可以被"看起来差不多"绕过：
+
+1. **输入校验**：知识/路径/需求/模板/规范/注册表版本与输入包快照一致（不一致即 `STALE_INPUT`）；逐节检查回执、文件、围栏与公式边界、允许链接；片段中出现 `BL-*`、`ID ^ID` 锚点或 `^K/^EX` 直接报 `RESERVED_SYSTEM_MARKUP`。
+2. **装配**：按 section 清单合并片段，插入 `BL-L`、`BL-TEACH`、`BL-EX` 边界与该实体的入口锚点；练习区间由 `result.json` 的 `exercises[].heading` 定位，标题缺失或不唯一即 `INVALID_OUTPUT`。
 3. **关系渲染与阶段性校验**：在候选文件集（虚拟完整文件集）上推导关系、渲染 `BL-REL`，检查结构、链接权限、投影相等、KP/SRC 约束与 DEP 无环。
-4. **提交**：写入事务日志后按文件原子替换；任一步失败按备份回滚，attempt 记为 collected，已完成片段保留供续写。
+4. **提交**：写入事务日志后按文件原子替换；任一步失败按备份回滚。提交成功后把实际使用的练习登记进 `_工作区/练习索引.jsonl`（status=used）。
 
-重复 collect 不重复合并或追加；幂等由“相同输入得到逐字节相同输出”保证。字节、分隔符和链接检查不证明数学或教学解释正确，仍须按章节规范复核内容。
+重复 commit 不会重复合并或追加；幂等由"相同输入得到逐字节相同输出"保证。字节、分隔符和链接检查不证明数学或教学解释正确，仍须按章节规范复核内容。
 
-成员提前结束、工具写入失败、最后 result 缺失或 status 为 partial 时，collect 保存有效片段的哈希与进度，整章不标记完成；失败节与缺失节保留待补。自动 refill 创建新 attempt，复制经验证的片段，记录 parent_attempt_id，并生成续写摘要（提纲、已用块 ID、未完节末尾）。新成员只补缺失片段，不覆盖复制的旧片段；续写仍占普通章级槽位，不嵌套派代理、不重置重试计数。
+草稿未写完时 commit 返回 `PARTIAL_OUTPUT`：保存有效片段的哈希与进度，整章不标记完成，缺失片段保留待补；主代理补写后再 commit，已验证片段不会被清空（哈希变了会被拒绝）。连续失败达到 `max_attempts` 转 `needs_review`。输入快照或已保存片段哈希改变时拒绝续写，须先复核处理。
 
-使用相同 collect/recover 命令恢复；即使没有最终 result，只要已确认旧成员停止也可收集回执。parts-v1 的 fail-attempt（超时/工具失败）先尝试收集成果再补位。普通等待超时不等于任务失败。连续失败最多 max-attempts，超限 needs_review；文件存在不代表完整，未获回执确认的孤立片段不自动复用。输入或已保存片段哈希改变时拒绝旧片段续写，须先复核处理。未完成整章时仍禁止生成核心卡片。
+```text
+python -X utf8 SKILL/scripts/lesson_tasks.py --course COURSE check
+```
 
-旧任务缺少 write_mode 时保留单文件收集分支；规范/快照变化会使旧任务失效，不直接修改正在执行的 task.json。先确认旧成员停止并保留成果，再 prepare 生成新契约；不能把旧半篇正文冒充有完整分段证据的新成果。
+`check` 校验每章状态、输入新鲜度、输出哈希与提交证据；全部通过才允许进入卡片阶段。
 
-知识正文、分片、路径、需求、分配附件、graph policy 或注册表结构版本变化会使旧讲义失效；status/check 可定位，prepare 重建受影响任务。快照只比较**教学内容哈希**：`semantic()` 会排除脚本管理的关系区与身份锚点，因此渲染关系、锚点移位或重命名不会触发无限重写；教学正文真的改了才会失效。失败最多 max-attempts（默认 3），超限 needs_review，不自动无限重置。
-
-## 主代理统一生成卡片
+## 三、主代理统一生成卡片
 
 全部讲义通过 `lesson_tasks.py check` 后，主代理按 lesson order 每次读取一章与对应知识索引，及时将候选写入 `_工作区/核心候选.jsonl`。不要一次读取全部章节，不宣称能清除已读历史。
 
@@ -62,13 +59,17 @@ collect 分四步，且没有任何一步可以被“看起来差不多”绕过
 python -X utf8 SKILL/scripts/core_cards.py --course COURSE prepare
 ```
 
-脚本确认全部讲义有效，统一分配稳定 KP-章-序-01 ID，保留已有 concept_key 的 ID；输出 `_工作区/核心卡片计划.json`（含 knowledge_ids、exercise_ids 与 canonical 字面量），回写知识索引的 core/card 元数据，重建知识内容.md 并重新渲染关系区。主代理根据计划、[卡片规范](core-cards.md) 和模板统一写 `核心知识点.md`，不派卡片子 Agent。脚本不会再往知识分片里塞关系块——关系区是派生视图，不是知识正文。
+脚本确认全部讲义有效，统一分配稳定 `KP-章-序-01` ID，保留已有 concept_key 的 ID；输出 `_工作区/核心卡片计划.json`（含 knowledge_ids、exercise_ids 与 canonical 字面量），回写知识索引的 core/card 元数据，重建 `知识内容.md` 并重新渲染关系区。主代理根据计划、[卡片规范](core-cards.md) 和 `assets/templates/core-card.md` 统一写 `核心知识点.md`，不派卡片子 Agent。
 
 ```text
+python -X utf8 SKILL/scripts/obsidian_links.py --course COURSE rebuild
 python -X utf8 SKILL/scripts/core_cards.py --course COURSE finalize
 python -X utf8 SKILL/scripts/core_cards.py --course COURSE check
+python -X utf8 SKILL/scripts/validate_package.py --course COURSE --mode final
 ```
 
-finalize 验证全局 ID、KP 边界与入口锚点、KP 出边只连 canonical K 与 active EX、关系投影键级一致，并记录全部讲义教学内容哈希、知识索引/知识库哈希、练习映射哈希、graph policy 与卡片哈希。之后任一输入或卡片变化都使快照失效。最终 validate_package 同时检查讲义任务、输入新鲜度和卡片快照。
+顺序不能颠倒：卡片会改变全课程的派生关系，因此写完 `核心知识点.md` 后先 `obsidian_links.py rebuild` 把关系区重渲到全部文档，再由 `finalize` 校验投影一致。
 
-运行时 attempt/staging 不作为知识图谱节点；最终 package 清理讲义尝试目录。不要在学习包仍需修订时提前 package。
+finalize 验证全局 ID、KP 边界与入口锚点、KP 出边只连 canonical K 与 active EX、关系投影键级一致，并记录全部讲义教学内容哈希、知识索引/知识库哈希、练习映射哈希、graph policy 与卡片哈希。**Obsidian 链接（边界、锚点、关系区）始终由脚本渲染**：写完卡片后运行 `obsidian_links.py rebuild` 同步关系与注册表，再 `core_cards.py check` 与 `--mode final` 复验；`package` 之后用 `--mode packaged` 复验。主代理不在正文手写这些链接。
+
+运行时 staging 不作为知识图谱节点；最终 package 清理讲义输入与尝试目录。不要在学习包仍需修订时提前 package。

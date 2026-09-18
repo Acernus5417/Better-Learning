@@ -12,7 +12,7 @@
 | codebuddy | 用 `send_message` 发 `shutdown_request`，确认后 `team_delete` 清理团队 |
 | claude | 用 `TaskStop` 停止，或确认该 subagent 已返回 |
 
-`package` 会拒绝在有活跃租约（`_工作区/转写任务.json` 里的 `active_member`）时执行，所以这一步不能跳过。同理 `assemble` 也不会在有 reserved/running 租约或未完成单元时通过——两者互为前置。
+`package` 会拒绝在有活跃租约（`_工作区/转写任务.json` 里的 `active_member`）时执行，也会拒绝在看门狗进程仍在运行时执行（先 `watchdog.py --course COURSE stop`），所以这一步不能跳过。同理 `assemble` 也不会在有 reserved/running 租约或未完成单元时通过——两者互为前置。
 
 ## 二、package：清理与归置
 
@@ -100,5 +100,7 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE package
 **打包前应已通过 `validate_package.py`**——它检查链接可达性，能在移动前发现断链；`package` 只负责搬家，不负责修复本来就断的链接。
 
 新 Obsidian 课程中，`[[知识内容#^K-01]]` 在打包后变成 `[[课程文档/知识内容#^K-01]]`。打包后再次验证双链，并记录纯路径变化的讲义/卡片提交快照；不把路径移动误判为教学内容变化。讲义 staging 也会被清理。
+
+`packaged` 复验的范围是**交付形态**：交付文件齐备、块唯一、每个目标仍可解析、文件未被改动；提取层与覆盖审计属于 `final` 阶段（依赖已被清理的 `_工作区/提取内容`），不在打包后重复。`package` 会在移动与改链之后刷新 `_工作区/链接校验报告.json`，作为打包后的核对基准。
 
 打包必须保留重验所需数据：`_工作区/课程配置.json`、`实体注册表.json`、`链接映射.json`、`链接校验报告.json`、`核心卡片计划.json`、`练习索引.jsonl`、`路径索引.json`、`管理文档索引.json` 与 `事务记录.jsonl` 都不属于中间产物。`package` 收尾后运行 `validate_package.py --mode packaged`：它核对交付文件与 final 快照、目标是否仍能解析、块是否仍唯一；中间产物已清理不影响判定，交付文件内容与快照不一致报 `STALE_MANIFEST`。

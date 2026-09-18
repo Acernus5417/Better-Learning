@@ -18,9 +18,9 @@ v2 课程的 `_工作区/课程配置.json` 至少含：`link_mode: obsidian`、
 
 `_工作区/转写任务.json` 是转写状态的唯一来源；`转写拆分计划.md` 是可重建投影，包含来源清单、单元清单、批次分配、划分规则、状态图例、更新规则六节。不手工同时维护两个状态表。
 
-台账 schema 3 记录 policy、max_attempts、max_concurrent、sources、attempts 和 probe_ref。单元通过 source_id + unit_id 唯一定位，包含 processing_route、assets、asset_hashes、output、meta、status、current_attempt、attempt_count。普通页默认 bounded 最多 5 页；异常页按单元升级 strict 并生成 overview/tiles。默认并发 4，可配 1..8，按宿主容量下调。unit 保存 next_profile、strict_reasons、complexity_flags、last_attempt_id、last_result；attempt 保存 profile、parent_attempt_id、result_contract。
+台账 schema 3 记录 policy、max_attempts、max_concurrent、current_batch_no、sources、attempts 和 probe_ref。调度按批次：一次 pump 预约一整批（`current_batch_no` 递增，attempt 记录 `dispatch_batch_no`），批内不补位，本批全部收集完才开下一批。单元通过 source_id + unit_id 唯一定位，包含 processing_route、assets、asset_hashes、output、meta、status、current_attempt、attempt_count。普通页默认 bounded 最多 5 页；异常页按单元升级 strict 并生成 overview/tiles。默认并发 4，可配 1..8，按宿主容量下调。unit 保存 next_profile、strict_reasons、complexity_flags、last_attempt_id、last_result；attempt 保存 profile、parent_attempt_id、result_contract。
 
-正式输出仍是提取目录的 `U00001/transcript-agent.md`，但只能由脚本提交。成员只写 `_工作区/转写尝试/<attempt_id>/<source_id>/<unit_id>.md`。attempt 保存 source_id、batch_id、unit_ids、logical_member、host_agent_id、host/model、state、task_manifest、staging_dir、时间、失败类别和提交日志。reserved 不代表宿主已启动；mark-running 绑定实际 ID 后才是 running。collect 须声明已确认停止的匹配宿主 ID，检查本次 staging 后才原子提交；重复收集终态 attempt 不重复追加。
+正式输出仍是提取目录的 `U00001/transcript-agent.md`，但只能由脚本提交。成员只写 `_工作区/转写尝试/<attempt_id>/<source_id>/<unit_id>.md`。attempt 保存 source_id、batch_id、unit_ids、logical_member、host_agent_id、host/model、state、task_manifest、staging_dir、时间、失败类别和提交日志。reserved 不代表宿主已启动；mark-running 绑定实际 ID 后才是 running。collect 须声明已确认停止的匹配宿主 ID，检查本次 staging 后才原子提交；重复收集终态 attempt 不重复追加。collect 不再回填空闲槽，失败与未完成单元留给下一批 pump。
 
 状态包括 pending、reserved、running、done、failed、unresolved、needs_review。默认最多 3 次尝试；疑难重试单独派发，超限转用户复核。non_teaching/duplicate 只能经 resolve 保存理由与独立证据，duplicate 必须有实际完成去向。成员不能写台账、meta 或正式输出。
 

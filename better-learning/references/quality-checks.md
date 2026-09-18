@@ -8,7 +8,9 @@ python SKILL/scripts/validate_package.py --course COURSE --mode packaged
 
 模式固定为 `legacy-report|staged|final|packaged`，默认 `final`；v2 严格模式不接受 heading 锚点与裸文件目标。脚本生成 `_工作区/结构检查.json`（packaged 模式生成 `_工作区/打包检查.json`），退出码 0 表示结构检查通过，1 表示存在问题，2 表示无法执行。错误行统一带错误码，便于按层定位：`[CODE] file[:line] message`。模型将实际结果和内容复核写入 `质量报告.md`，不能用“脚本通过”代替教学质量证明。
 
-`final` 通过时会写 `_工作区/链接校验报告.json` 快照；`packaged` 用它核对交付文件与保留数据（目标是否仍能解析、块是否仍唯一），中间产物已被清理不影响判定，但交付文件内容与快照不一致会报 `STALE_MANIFEST`。
+`final` 通过时会写 `_工作区/链接校验报告.json` 快照。**提取层与覆盖审计只在 `final` 运行**（它们依赖 `_工作区/提取内容` 与转写索引，`package` 会按设计删除）；`packaged` 不重复这些检查，只核对交付文件、保留数据与链接解析。
+
+`package` 会在移动文档、重写链接之后**刷新该快照**（`validate_package.record_snapshot`），因此 `packaged` 的字节比对是"打包后交付文件未被改动"，而不是"与打包前逐字节相同"；若交付文件在打包后被手改仍会报 `STALE_MANIFEST`，目标块丢失或不再唯一报 `MISSING_TARGET_BLOCK` / `DUPLICATE_BLOCK`。
 
 v2 的分层校验顺序：结构（边界/锚点/唯一块）→ 物理落点与 canonical 解析 → 链接形态与 manifest 授权 → 类型矩阵与 subtype 白名单 → 权限（KP/SRC 出边、载荷豁免）→ 图（DEP 无环、闭环/自环）→ 投影（关系区 observed == expected）→ 跨实体引用与来源保真。
 

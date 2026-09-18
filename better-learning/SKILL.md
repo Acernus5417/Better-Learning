@@ -17,11 +17,11 @@ description: 将教材、PDF（含扫描件）、电子书、课件和题库转�
 
 1. **确认学习目标与资料完整性。** 询问用途、希望能完成的任务及时间约束；盘点收到的文件，展示文件名并确认“这些是否就是本次全部资料”。允许先盘点、检查可读性，不能把未确认的范围当作最终范围。用户明确说暂以当前资料开始，记为本次已确认范围。**无文字层资料（扫描件）的范围只报机械事实**——文件名、格式、页数、字节数、有无文字层；主代理不得读图推断内容或章节。范围不清就问用户，或记为「范围待转写阶段核实」后直接进入准备：`prepare` 只做渲染与单元化，不依赖章节内容，`--chapter-boundaries` 本来就是可选项。
 2. **确认基础与前置。** 根据已学经历、自评及必要的简短诊断，确认已掌握、薄弱和未知内容，记录到 `学习需求.md`。不以生成文档或自评代替掌握证据。确认前不启动依赖该信息的正式编排；等待时可做技术提取。
-3. **先逐文件转写，再完整阅读并整理知识。** 读 [子 Agent 转写流程](references/image-first.md) 和 [资料处理](references/material-processing.md)。视觉任务先验证当前宿主与子代理模型的看图及写入能力，再增量准备单元与 `转写拆分计划.md`。可靠文本由脚本直写；PDF、图片与混合文档的视觉部分交成员真实识图，未渲染原生图形不得略过。派发只预约 attempt，启动后登记真实 Agent ID，成员写独立暂存目录，收集验证后提交正式结果。每单元立即落盘，主代理只收短状态。全部单元完成或有证据明确排除后，按来源合成独立 Markdown。再读 [数据约定](references/knowledge-model.md)，按源章节读取转写，使用 [章节知识模板](assets/templates/knowledge-chapter.md) 保存知识分片和覆盖台账，合并为 `知识内容.md`。图表、附录、题库与答案都要有去向，不把落盘校验当作语义复核。
+3. **先逐文件转写，再完整阅读并整理知识。** 读 [子 Agent 转写流程](references/image-first.md) 和 [资料处理](references/material-processing.md)。视觉任务先验证当前宿主与子代理模型的看图及写入能力，再增量准备单元与 `转写拆分计划.md`。首批派发前启动独立的看门狗进程（每 1 分 30 秒提醒"检查子agent是否正常工作"），转写收口后立即停止它。可靠文本由脚本直写；PDF、图片与混合文档的视觉部分交成员真实识图，未渲染原生图形不得略过。派发按**批次**进行：一次 pump 预约一整批（批大小 = 并发上限，可配 1..8），批内不补位；主代理对批内每个 ticket 建成员、启动后登记真实 Agent ID，成员写独立暂存目录，收集验证后提交正式结果，本批全部收集完才 pump 下一批。每单元立即落盘，主代理只收短状态。全部单元完成或有证据明确排除后，按来源合成独立 Markdown。再读 [数据约定](references/knowledge-model.md)，按源章节读取转写，使用 [章节知识模板](assets/templates/knowledge-chapter.md) 保存知识分片和覆盖台账，合并为 `知识内容.md`。图表、附录、题库与答案都要有去向，不把落盘校验当作语义复核。
 4. **规划学习路径。** 读 [路径规范](references/learning-path.md)，使用 [路径模板](assets/templates/learning-path.md)。以 `知识内容.md` 为核心，根据其知识索引建立依赖，先补前置、再由易到难编排；输出每章目标、入口、时长范围和过关分支。完整路线覆盖知识库，可另外标注目标相关主修路线。
-5. **并发生成章级学习文档。** 读 [章节规范](references/chapter-writing.md)，使用 [章节模板](assets/templates/learning-chapter.md)。以 `知识内容.md` 为核心，路径完成后运行 [章级调度](references/lesson-pipeline.md)。一章一个 fresh-context 子 Agent，仅读取分配知识片段、路径片段、需求和当前规范；并发写 staging，collect 验证后提交 `学习文档/`。任一章完成立即启动 refill，不等整轮结束。每章要包含理解、例题、自测、答案、纠错和复习闭环，不能以摘要或速查表代替教学。
-6. **生成核心知识卡片。** 读 [卡片规范](references/core-cards.md)，全部讲义 collect 完成且有效后，由主代理顺序读每章和对应索引，立即保存 `_工作区/核心候选.jsonl`，统一概念归一、跨章去重，再按 [卡片模板](assets/templates/core-card.md) 一次形成 `核心知识点.md`。讲义成员不生成最终卡片、不分配 card_id，不另派卡片子 Agent。通过 core_cards.py 分配稳定 ID、回写索引与双链并验证输入快照。对照已核查讲义，建立知识、讲义、卡片及练习间的链接。
-7. **验收并交付。** 读 [质量规范](references/quality-checks.md)，运行结构检查，再进行内容复核。写 `开始学习.md`、`质量报告.md`，给出开始位置、下一步及实际限制。存在关键资料未辨识、未覆盖、必要前置未补齐或未完成章节时，不宣称完整完成。结构检查通过后按 [交付结构](references/delivery-layout.md) 收尾：先确认所有子 Agent 已停止，再运行 `package`（先 `--dry-run` 预览），归置报告类文档并清除中间产物。
+5. **由主代理按章生成学习文档。** 读 [章节规范](references/chapter-writing.md)，使用 [章节模板](assets/templates/learning-chapter.md)，流程见 [讲义流水线](references/lesson-pipeline.md)：以 `知识内容.md` 为核心，路径完成后 `lesson_tasks.py prepare` 生成逐章输入包；主代理一次一章，只读该章知识片段、路径片段、需求和当前规范，分段落盘后 `commit --lesson <L-ID>` 由脚本装配边界、锚点与关系区并提交 `学习文档/`。**不派章级子 Agent、不并发**；写完一章立即提交再进入下一章。每章要包含理解、例题、自测、答案、纠错和复习闭环，不能以摘要或速查表代替教学。
+6. **由主代理生成核心知识卡片并完成 Obsidian 链接。** 读 [卡片规范](references/core-cards.md)，全部讲义 commit 且 `lesson_tasks.py check` 通过后，主代理顺序读每章和对应索引，立即保存 `_工作区/核心候选.jsonl`，统一概念归一、跨章去重，再按 [卡片模板](assets/templates/core-card.md) 一次形成 `核心知识点.md`。不派卡片子 Agent、不分配 card_id。随后按 [Obsidian 链接规范](references/obsidian-links.md) 由脚本渲染链接：`core_cards.py prepare → 写卡片 → obsidian_links.py rebuild → core_cards.py finalize → core_cards.py check → validate_package.py --mode final`，建立知识、讲义、卡片及练习间的链接（卡片会改变全课程派生关系，故 rebuild 必须在 finalize 之前）。
+7. **验收并交付。** 读 [质量规范](references/quality-checks.md)，运行结构检查，再进行内容复核。写 `开始学习.md`、`质量报告.md`，给出开始位置、下一步及实际限制。存在关键资料未辨识、未覆盖、必要前置未补齐或未完成章节时，不宣称完整完成。结构检查通过后按 [交付结构](references/delivery-layout.md) 收尾：先确认所有子 Agent 已停止并停止看门狗进程（`watchdog.py stop`），再运行 `package`（先 `--dry-run` 预览），归置报告类文档并清除中间产物。
 
 ## 能力边界与知识库前置条件
 
@@ -49,10 +49,24 @@ description: 将教材、PDF（含扫描件）、电子书、课件和题库转�
 - 以源章节为整理单元，超大章按小节/页段分块。当前上下文只保留当前块、必要前置和精简索引。工具文本被截断时缩小读取范围，不猜测被截断内容。
 - 及时写章节知识分片和覆盖记录。`知识内容.md` 可超过上下文大小；脚本完整拼接，不再进行一次有损全局摘要。写作时通过索引回读相关分片。
 - “浓缩”只删除重复和冗余，保留独立概念、条件、关系、关键推导、例外、方法、图表事实及不同题型中的知识。不仅保留重点。
-- 正常调度使用 pump，任一成员结束立即 collect 并优先启动返回的 refill tickets；Python 仅预约，主代理调用宿主创建成员。每个阶段/章节完成后更新进度。标记完成前先落盘、检查。恢复时核对源文件哈希和产物是否存在。
-- 活跃成员期间按 [宿主事件循环](references/host-adapter.md#七完成事件与等待) 等待任一成员通知；Codex 使用 collaboration.wait_agent，不用 clock.sleep、shell sleep 或 Start-Sleep 轮询完成。收到完成通知立即确认状态、collect、启动 refill，再继续等待；不得先睡一段时间或等待其他成员。等待超时不等于成员超时失败。
-- 讲义成员按任务 sections 边生成边保存自然片段与回执，不一次提交整章。partial 或缺少最终回执时先 collect 保存有效片段，再由新 attempt 续写缺失部分；脚本合并与验收后才交付正式讲义。写入失败不得只口头宣布“改为分段”便停止，详见 [讲义成员策略](references/lesson-worker-policy.md)。
+- 正常调度使用 pump，一批派发完即等待本批成员；任一成员结束立即 collect（不再返回 refill tickets），本批全部结束后再 pump 下一批。Python 仅预约，主代理调用宿主创建成员。每个阶段/章节完成后更新进度。标记完成前先落盘、检查。恢复时核对源文件哈希和产物是否存在。
+- 转写期间运行独立看门狗进程：`watchdog.py start --host HOST --interval 90`。它每 90 秒投递"检查子agent是否正常工作"及纯元数据诊断（活动数、静默秒数、疑似无进展的 attempt），只体检不处置；主代理每被唤醒一次就先读 `_工作区/看门狗/状态.json`。成员仍在运行就继续等，只有宿主确认停止才能 recover/collect。`pump` 无票、`active_count=0`、`check` 通过且 `assemble` 完成后立即 `watchdog.py stop`；`package` 会拒绝在看门狗仍在运行时执行。详见 [宿主适配](references/host-adapter.md#八看门狗与后台进程)。
+- 活跃成员期间按 [宿主事件循环](references/host-adapter.md#七完成事件与等待) 等待任一成员通知；Codex 使用 collaboration.wait_agent，不用 clock.sleep、shell sleep 或 Start-Sleep 轮询完成。收到完成通知立即确认状态、collect，再继续等待本批其余成员；不得先睡一段时间，也不在批内另起新成员。等待超时不等于成员超时失败。
+- 讲义由主代理按 sections 边写边保存自然片段与回执，不一次提交整章。草稿未写完时 commit 返回 `PARTIAL_OUTPUT` 并保留已验证片段，主代理补写缺失片段后再次 commit，脚本合并与验收后才交付正式讲义；连续失败达 `max_attempts` 转 `needs_review`。写入失败不得只口头宣布“改为分段”便停止，详见 [章级写作策略](references/lesson-writing-policy.md)。一次只处理一章，提交后立即进入下一章。
 - 用户新增资料时重新确认范围，重新盘点并重提取变更来源；更新受影响分片、路径、讲义及卡片，保留学习者作答与反馈。
+
+## 模板清单与使用门禁
+
+`assets/templates/` 是写作阶段的结构契约，脚本通过 `scripts/templates.py` 统一管理（`python -X utf8 SKILL/scripts/templates.py list|check`）。**进入任何写作阶段前先读对应模板**；产物缺少模板规定的结构块即返工，不靠「看起来差不多」通过。
+
+| 模板 | 使用阶段 | 使用者 | 是否纳入快照 |
+| --- | --- | --- | --- |
+| [章节知识模板](assets/templates/knowledge-chapter.md) | 知识分片与 `知识内容.md` | 主代理 | 是（`生成进度.json` 的 `template_hashes`） |
+| [路径模板](assets/templates/learning-path.md) | 学习路径与步骤 | 主代理 | 是（`生成进度.json` 的 `template_hashes`） |
+| [章节模板](assets/templates/learning-chapter.md) | 章级学习文档 | 主代理 | 是（讲义输入快照 `template`） |
+| [卡片模板](assets/templates/core-card.md) | 核心知识点 | 主代理 | 是（讲义与卡片快照 `card_template`） |
+
+模板哈希变化会让基于旧模板写成的产物失效（讲义转 stale、卡片快照失效），必须按新模板重新核对，不能沿用旧结构继续验收。转写成员只看 `worker-policy.md`，不读模板；主代理也不要把整份模板塞进与写作无关的阶段。
 
 ## 工具边界
 

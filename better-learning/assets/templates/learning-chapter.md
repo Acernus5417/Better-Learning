@@ -83,3 +83,11 @@ tags:
 
 ## 来源与未解决事项
 {真实来源、冲突处理、未覆盖/不可辨识处及影响}
+
+说明：
+
+- 本模板由**主代理**使用：按 `manifest.sections` 把上面各块写进 `parts/<section>/001.md…`，每次写完更新该节 `section.json`；不要直接写 `学习文档/` 下的正式文件，也不要写 `<!-- BL-… -->`、`K-ID ^K-ID`、`^EX-…`，边界与锚点由 `commit` 装配。
+- 每个知识小节是 manifest 中一个 `kind: knowledge` 的 section，脚本会在小节标题后插入该知识的入口锚点并包上 `BL-TEACH`。
+- 例题与自测只使用 `manifest.reserved_exercises` 里的 EX ID，并在 `result.json` 登记 `id` 与正文标题原文（标题须唯一，脚本按标题定位练习区间）。
+- 内部链接只复制 `manifest.links` 的 canonical 字面量；不写相对路径、`.md` 后缀或 heading 锚点。
+- 模板哈希已纳入输入快照：模板变化会让基于旧模板的章节失效，需重新核对。

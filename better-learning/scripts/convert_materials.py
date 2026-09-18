@@ -168,6 +168,10 @@ def summarize(data):
                 ready.append({'source': source['id'], 'batch': batch['id']})
     result['next_batches'] = ready[:available]
     result.update(active_count=len(active), available_slots=available,
+                  batch={'open': bool(active), 'no': data.get('current_batch_no', 0),
+                         'active': [a['id'] for a in active],
+                         'next': ('本批未收口：逐个确认宿主停止并 collect，全部结束后再 pump 下一批（批内不补位）'
+                                  if active else '本批已收口，可以 pump 下一批')},
                   strict_ready=sum(u.get('next_profile') == 'strict' and u['status'] in RETRYABLE and not u.get('blocked') for u in units),
                   bounded_ready=sum(u.get('next_profile') == 'bounded' and u['status'] in RETRYABLE and not u.get('blocked') for u in units))
     scanned = [s['id'] + '（' + str(len(s['units'])) + ' 单元）' for s in data['sources'] if s.get('scanned')]
@@ -263,6 +267,7 @@ def prepare(course, batch_size=5, max_concurrent=4, chapter_boundaries=None, mod
     boundaries = read_json(inside(course, chapter_boundaries)) if chapter_boundaries else {}
     data = {'schema_version': 3, 'engine': 'host-subagent', 'generated_at': now(),
             'mode': 'bounded', 'batch_budget': batch_budget, 'max_attempts': max_attempts,
+            'current_batch_no': old.get('current_batch_no', 0) if old.get('schema_version') == 3 else 0,
             'policy': {'bounded_batch_size': batch_size, 'max_concurrent': max_concurrent, 'strict_cost_threshold': strict_cost_threshold, 'max_attempts': max_attempts},
             'attempts': old.get('attempts', []) if old.get('schema_version') == 3 else [], 'probe_ref': '_工作区/能力探针/current.json',
             'batch_size': batch_size, 'max_concurrent': max_concurrent, 'sources': []}
@@ -380,9 +385,9 @@ def assess(course, source, unit, member, structured=False):
 
 
 @validation_run
-def collect(course, sid=None, bid=None, stopped_member=None, attempt_id=None, stopped_agent_id=None, refill=False):
+def collect(course, sid=None, bid=None, stopped_member=None, attempt_id=None, stopped_agent_id=None):
     from attempt_tasks import collect_attempt
-    return collect_attempt(course, sid, bid, attempt_id, stopped_agent_id, refill=refill)
+    return collect_attempt(course, sid, bid, attempt_id, stopped_agent_id)
 
 
 @validation_run
@@ -517,13 +522,15 @@ def assemble(course):
     if enabled(course): build_map(course)
     return {'complete': True, 'sources': len(data['sources']), 'paths': [s['transcript'] for s in data['sources']],
             'next': '转写已全部完成。请按宿主适配确认所有子 Agent 已停止（不再有成员在写），'
+                    '并运行 `watchdog.py --course COURSE stop` 停止看门狗进程；'
                     '随后按章整理知识内容.md、学习路径、讲义和卡片，验收后才可 package。'}
 
 
 DOC_DIR = '课程文档'
 DOC_FILES = ('学习需求.md', '学习路径.md', '资料清单.md', '知识内容.md',
              '质量报告.md', '待核实问题.md', '学习反馈.md', '转写拆分计划.md')
-PURGE = ('_工作区/讲义尝试', '_工作区/转写尝试', '资料转写/_分片', '_工作区/派发提示', '_工作区/提取内容')
+PURGE = ('_工作区/讲义尝试', '_工作区/讲义输入', '_工作区/转写尝试', '资料转写/_分片', '_工作区/派发提示',
+         '_工作区/提取内容', '_工作区/看门狗')
 LINK = re.compile(r'(!?\[[^\]\n]*\]\(\s*)(?:<([^>]+)>|([^\s)]+))((?:\s+["\'][^\n]*?["\'])?\s*\))')
 
 
@@ -601,7 +608,11 @@ def package(course, dry_run=False):
     _工作区/结构检查.json，打包后不再重复校验。
     """
     from assemble_knowledge import require_knowledge
+    from watchdog import is_running
     require_knowledge(course)
+    if is_running(course):
+        raise ValueError('看门狗进程仍在运行；转写阶段结束后先运行 '
+                         '`watchdog.py --course COURSE stop`，再打包')
     data = load(course)
     active = [b['active_member'] for s in data['sources'] for b in s['batches'] if b.get('active_member')]
     if active:
@@ -641,6 +652,10 @@ def package(course, dry_run=False):
         build_map(course, moves)
         from lesson_tasks import record_link_relocation
         record_link_relocation(course, {k.removesuffix('.md'): v.removesuffix('.md') for k, v in moves.items()})
+        # Deliverables were just moved and relinked: refresh the receipt the
+        # packaged check compares against, then verify targets still resolve.
+        from validate_package import record_snapshot
+        record_snapshot(course, 'packaged')
         link_errors = validate_obsidian_links(course, phase='packaged')
         if link_errors: raise ValueError('打包后链接检查失败：' + '; '.join(link_errors))
         from validate_package import validate as validate_all
@@ -781,7 +796,7 @@ def main():
             elif args.command == 'dispatch':
                 result = dispatch(course, args.source, args.batch, args.host, args.model)
             elif args.command in {'collect', 'recover'}:
-                result = collect(course, attempt_id=args.attempt, stopped_agent_id=args.stopped_agent_id, refill=True)
+                result = collect(course, attempt_id=args.attempt, stopped_agent_id=args.stopped_agent_id)
             elif args.command == 'pump':
                 from attempt_tasks import pump
                 result = pump(course, args.host, args.model, args.max_fill, args.host_limit)
@@ -790,7 +805,7 @@ def main():
                 result = mark_running(course, args.attempt, args.agent_id)
             elif args.command == 'fail-attempt':
                 from attempt_tasks import fail_attempt
-                result = fail_attempt(course, args.attempt, args.kind, args.stopped_agent_id, args.message, refill=True)
+                result = fail_attempt(course, args.attempt, args.kind, args.stopped_agent_id, args.message)
             elif args.command == 'report':
                 data = load_ledger(course)
                 render_plan(course, data)

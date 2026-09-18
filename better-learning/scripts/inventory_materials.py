@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from _common import atomic_text, read_json, sha256, write_json
+from templates import snapshot as template_snapshot
 
 
 def inventory(course: Path, inputs: list[Path]) -> dict:
@@ -72,16 +73,18 @@ def inventory(course: Path, inputs: list[Path]) -> dict:
     state_file = work / '生成进度.json'
     if state_file.exists():
         state = read_json(state_file)
+        state['template_hashes'] = template_snapshot()
         if changed:
             state.setdefault('confirmations', {})['materials'] = False
             state['stage'] = 'needs_update'
             state['next_action'] = '资料范围或内容变化：重新确认范围，更新受影响的知识、路径、讲义和卡片'
-            write_json(state_file, state)
+        write_json(state_file, state)
     else:
         write_json(state_file, {'schema_version': 1,
             'confirmations': {'goal': False, 'materials': False, 'baseline': False},
             'stage': 'intake', 'completed_chapters': [], 'completed_lessons': [],
-            'blockers': [], 'next_action': '确认学习目标和资料范围'})
+            'blockers': [], 'next_action': '确认学习目标和资料范围',
+            'template_hashes': template_snapshot()})
     return {'sources': len(sources), 'changed': changed, 'manifest': str(index_file)}
 
 

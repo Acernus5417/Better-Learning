@@ -7,6 +7,11 @@ def active_attempts(data):
     return [a for a in data.get('attempts', []) if a['state'] in ACTIVE_STATES]
 
 
+def batch_open(data):
+    """A dispatch batch is still in flight; the next batch may not start yet."""
+    return bool(active_attempts(data))
+
+
 def available_slots(data, host=None):
     limit = min(data['max_concurrent'], data.get('host_limits', {}).get(host, 8))
     return max(0, limit - len(active_attempts(data)))

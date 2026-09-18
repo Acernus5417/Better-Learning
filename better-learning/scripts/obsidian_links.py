@@ -230,8 +230,13 @@ def strip_vault_prefix(target, prefix):
     return target
 
 
-def validate_candidate(course, documents, phase='staged', lesson_id=None):
-    """Validate a virtual file set (staged candidates) without writing it."""
+def validate_candidate(course, documents, phase='staged', lesson_id=None, require_targets=True):
+    """Validate a virtual file set (staged candidates) without writing it.
+
+    `require_targets=False` is for mid-course commits: a chapter may legitimately
+    link lessons, steps and entries that have not been written yet. Final
+    validation (--mode final) still requires every physical target.
+    """
     registry_obj = Registry(course)
     diagnostics = []
     for path, text in documents.items():
@@ -240,7 +245,8 @@ def validate_candidate(course, documents, phase='staged', lesson_id=None):
         except SectionError as exc:
             diagnostics.append({'code': exc.code, 'file': path, 'line': exc.line, 'message': exc.message})
             continue
-        diagnostics.extend(validate_links(course, text, registry_obj=registry_obj, phase=phase))
+        diagnostics.extend(validate_links(course, text, registry_obj=registry_obj, phase=phase,
+                                          require_targets=require_targets))
     graph = derive_course_relations(course, registry_obj, phase=phase)
     merged = dict(learner_documents(course))
     merged.update(documents)

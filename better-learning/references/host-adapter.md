@@ -46,7 +46,7 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE dispatch \
   - **团队成员**（`name` + `mode`）：异步、独立上下文、工具集完整（含 `write_to_file` / `replace_in_file` / `execute_command`），**这是本流程要用的形态**。
 - `mode` 取 `acceptEdits`（自动接受文件编辑）即可；`bypassPermissions` 更强但不必要。
 - 团队管理：`team_delete` 清理；成员可通过 `send_message` 主动回推——因此提示词里的"只回 5 行、不要工具清单"是硬要求。
-- 调度接收团队成员的短完成通知与宿主终态回执，这属于元数据，不违反“主代理不读正文”。不要执行 `execute_command` 的 sleep 120/170 秒后再查 status。Python `status` 仅汇总主代理维护的台账，不查询 CodeBuddy 宿主；成员写齐文件也不能证明它已停止。成员正常完成时使用真实完成回执；只有需主动停止或当前宿主要求 shutdown 才发 `shutdown_request`，并等停止确认后 collect，不能刚发请求就声明已停止。
+- 调度接收团队成员的短完成通知与宿主终态回执，这属于元数据，不违反"主代理不读正文"。不要执行 `execute_command` 的 sleep 120/170 秒后再查 status。Python `status` 仅汇总主代理维护的台账，不查询 CodeBuddy 宿主；成员写齐文件也不能证明它已停止。成员正常完成时使用真实完成回执；只有需主动停止或当前宿主要求 shutdown 才发 `shutdown_request`，并等停止确认后 collect，不能刚发请求就声明已停止。
 
 ### 2.3 claude
 
@@ -105,25 +105,39 @@ python -X utf8 SKILL/scripts/convert_materials.py --course COURSE dispatch \
 
 不需要改 `prepare` / `collect` / `assemble` / `check`——它们完全宿主无关。
 
-正常调度由 pump 返回 spawn tickets；主代理调用宿主工具并 mark-running。任一完成事件先确认停止再 collect，优先启动 refill，不等待整个批次池清空。转写与章级讲义共用 host_agents / agent_pool 契约；并发上限是业务配置，不代表宿主一定有同等空闲容量。
+正常调度由 pump 返回 spawn tickets；主代理调用宿主工具并 mark-running。任一完成事件先确认停止再 collect；**不启动 refill 成员**，本批全部收集完才 pump 下一批。转写阶段共用 host_agents / agent_pool 契约；并发上限是业务配置，不代表宿主一定有同等空闲容量。
 
 ## 七、完成事件与等待
 
-此规则同时用于转写和章级讲义。Python 只在调用 pump / collect 时执行，不是后台守护进程；collect 内的 refill 不会在主代理休眠时自行触发。
+此规则只用于转写（章级讲义已改为主代理写作，没有子 Agent）。Python 只在调用 pump / collect 时执行，不是后台守护进程；批内不再有 refill，不会在主代理休眠时自行触发。
 
 Codex 的正常宿主循环：
 
 1. pump → 对返回的 tickets 启动成员 → 逐个 mark-running。
 2. 先处理已到达的完成通知；通知中的 attempt 与真实 Agent ID 必须匹配台账。成员文字说 DONE 仍需宿主终态确认，不能凭文件存在推断已停止。
-3. 每确认一个成员完成就 collect，立即启动其 refill 并 mark-running，然后处理下一条通知；不先等待剩余成员，不先做长篇汇报。
+3. 每确认一个成员完成就 collect，然后处理下一条通知；本批内不启动新成员。整批 collect 完毕（status 的 `batch.open=false`）后再 pump 下一批。
 4. 没有未处理的完成通知、仍有活动成员且无必要本地工作时，调用 `collaboration.wait_agent({"timeout_ms": 30000})` 等待任一成员消息。这是事件等待，消息到达会提前返回，30000 是超时上限，不是必须睡满的间隔。单次等待不超过 60000 毫秒。
 5. 返回后先区分完成、普通进度、用户输入和等待超时；必要时用 `collaboration.list_agents` 查询当前任务成员的宿主状态。完成即回到第 3 步；进度/等待超时不释放租约、不算失败、不消耗重试次数。不要在事件已到达后额外 sleep。
 6. 队列与活动成员均为空才结束。若队列有任务但没有活动成员，先 pump 或处理明确阻塞，不进入空等。
 
-不要用 `clock.sleep`、`time.sleep`、`Start-Sleep` 或长时间 shell 循环观察输出文件来代替成员通知。不能把通用“等待更久减少轮询”的建议理解为固定休眠；真正能被任一成员完成事件唤醒的等待不会强制睡满超时值。
+不要用 `clock.sleep`、`time.sleep`、`Start-Sleep` 或长时间 shell 循环观察输出文件来代替成员通知。不能把通用"等待更久减少轮询"的建议理解为固定休眠；真正能被任一成员完成事件唤醒的等待不会强制睡满超时值。
 
-其他宿主优先使用本会话实际提供的异步完成通知/任一成员等待能力，不猜工具名或参数；查看当前工具 schema。只有确实没有完成事件接口时，才退化为不超过 10 秒的短轮询，每次检查全部当前活动成员并逐个收集补位。没有任何状态变化时不反复运行 pump、读取全台账或正文。
+其他宿主优先使用本会话实际提供的异步完成通知/任一成员等待能力，不猜工具名或参数；查看当前工具 schema。只有确实没有完成事件接口时，才退化为不超过 10 秒的短轮询，每次检查全部当前活动成员并逐个收集（不补位）。没有任何状态变化时不反复运行 pump、读取全台账或正文。
 
-两类 status 不可混淆：`convert_materials.py status` / `lesson_tasks.py status` 查询课程台账，宿主成员状态接口查询实际执行状态。前者不监听子代理，也不会因为 staging 文件已写齐自动把 running 改成完成；因此仅循环“睡眠 → 脚本 status”不能实现完成即补位。接收宿主短完成消息、查询成员状态都属于允许的元数据操作。
+两类 status 不可混淆：`convert_materials.py status` / `lesson_tasks.py status` 查询课程台账，宿主成员状态接口查询实际执行状态。前者不监听子代理，也不会因为 staging 文件已写齐自动把 running 改成完成；因此仅循环"睡眠 → 脚本 status"不能实现整批收口。接收宿主短完成消息、查询成员状态都属于允许的元数据操作。
 
-排查延迟时分别核对“宿主确认完成 → collect 开始 → refill 返回 → 新成员启动”的时间。UI 显示等待持续 170 秒不能单独证明补位延迟；若调用是固定休眠，或完成事件已到达却未收集，才是此循环执行不正确。该流程保证收到完成事件后优先补位，实际延迟还包括宿主消息投递、工具排队和输出校验耗时。
+排查延迟时分别核对"宿主确认完成 → collect 开始 → 本批最后一个成员 collect 结束 → 下一批 pump"的时间。UI 显示等待持续 170 秒不能单独证明延迟；若调用是固定休眠，或完成事件已到达却未收集，才是此循环执行不正确。本流程不再有"补位"环节，批内成员各自独立推进，实际耗时还包括宿主消息投递、工具排队和输出校验。
+
+## 八、看门狗与后台进程
+
+全流程只有转写一个多 Agent 环节，看门狗只覆盖该阶段。启动方式按宿主查表（`host_agents.py` 的 `background_process`）：
+
+| 宿主 | 启动后台进程 |
+| --- | --- |
+| codex | `nohup python -X utf8 SKILL/scripts/watchdog.py --course COURSE start --host codex &`（Windows 用 `Start-Process pythonw`） |
+| codebuddy | `execute_command`：`Start-Process -FilePath pythonw -ArgumentList "…watchdog.py --course COURSE start --host codebuddy" -WindowStyle Hidden` |
+| claude | Bash：`nohup python -X utf8 SKILL/scripts/watchdog.py --course COURSE start --host claude >/dev/null 2>&1 &` |
+
+提醒投递：三个宿主的 `nudge` 均为 `null`——外部进程无法调用宿主的 `send_message`/`collaboration` 接口，因此**统一走文件通道**：`_工作区/看门狗/提醒.jsonl` 追加一条、`状态.json` 保存最新一条。主代理每次被唤醒（完成事件到达或 `wait_agent` 超时返回）先读 `状态.json`，这就是"看门狗主动提醒"的落点；不得因为宿主没有推送接口就假装已收到实时消息。
+
+禁止事项（写死在此，任何宿主都一样）：看门狗不得判失败、不得 collect、不得释放租约、不得改台账；主代理不得用它替代宿主完成事件；不得用长 sleep 代替等待。若宿主确实无法启动后台进程，降级为主代理每 90 秒读一次 `status` 自检，并在质量报告里如实说明没有独立进程。
